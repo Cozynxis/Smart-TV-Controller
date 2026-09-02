@@ -1,0 +1,33 @@
+(() => {
+  const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+  let paired=false,checking=false,volumeTimer=null,lastMute=false;
+  const tv=()=>typeof state!=='undefined'&&state?state.current:null;
+  function msg(text,type='subtle'){const el=$('#secureRemoteMessage');if(el){el.className='notice '+type;el.textContent=text}}
+  function inject(){
+    const view=$('#view-remote');if(!view||$('#secureRemoteCard'))return;
+    const card=document.createElement('div');card.id='secureRemoteCard';card.className='card secure-remote-card';card.innerHTML=`
+      <div class="card-head"><div><span class="eyebrow">SECURE CONTROL</span><h3>📱 Remote verbinding</h3><p>Ambilight werkt via HTTP. De afstandsbediening gebruikt de beveiligde Philips-verbinding op poort 1926.</p></div><span id="secureRemoteBadge" class="badge offline">Control niet gekoppeld</span></div>
+      <div id="secureRemoteSetup" class="secure-remote-setup"><div class="secure-remote-explain"><b>Eenmalig activeren</b><span>Klik hieronder. Je TV toont een PIN. Vul die PIN hier in. Daarna onthoudt de bridge de Remote-koppeling lokaal.</span></div><button id="secureRemoteStart" class="btn primary">Remote activeren</button></div>
+      <div id="secureRemotePinBox" class="secure-pin-box hidden"><label>PIN van de TV<input id="secureRemotePin" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="Bijv. 1234"></label><button id="secureRemoteGrant" class="btn primary">PIN bevestigen</button><button id="secureRemoteCancel" class="btn ghost">Annuleren</button></div>
+      <div id="secureRemoteMessage" class="notice subtle">Control-status controleren…</div>`;
+    view.insertBefore(card,view.firstChild);bind();check();
+  }
+  function setPaired(v){paired=!!v;const badge=$('#secureRemoteBadge'),setup=$('#secureRemoteSetup'),pin=$('#secureRemotePinBox');if(badge){badge.textContent=paired?'Secure Remote klaar':'Control niet gekoppeld';badge.className='badge '+(paired?'protected':'offline')}if(setup)setup.classList.toggle('hidden',paired);if(paired&&pin)pin.classList.add('hidden');syncButtons();if(paired){const n=$('#remoteNotice');if(n){n.classList.add('hidden');n.textContent=''}msg('Remote is gekoppeld. Knoppen, volume en mute gaan nu via de beveiligde TV-verbinding.','success')}}
+  function syncButtons(){if(!paired)return;$$('[data-key],#muteBtn,#volumeSlider').forEach(x=>{x.disabled=false;x.removeAttribute('aria-disabled')})}
+  async function check(){if(checking)return;const d=tv();if(!d)return setTimeout(check,700);checking=true;try{const r=await api('/api/remote/status',{method:'POST',body:JSON.stringify({deviceId:d.id})});setPaired(!!r.paired);if(!r.paired)msg('Ambilight is verbonden. Activeer Remote één keer om de beveiligde knoppen te gebruiken.')}catch(e){msg('Remote-status kon nog niet worden gelezen: '+e.message,'warning')}finally{checking=false}}
+  async function startPair(){const d=tv();if(!d)return msg('Verbind eerst de TV.','warning');const b=$('#secureRemoteStart');b.disabled=true;b.textContent='PIN aanvragen…';try{const r=await api('/api/remote/pair/request',{method:'POST',body:JSON.stringify({deviceId:d.id})});$('#secureRemotePinBox').classList.remove('hidden');$('#secureRemotePin').focus();msg(r.message||'Kijk op de TV en vul de PIN in.','success')}catch(e){msg('PIN aanvragen mislukt: '+e.message,'warning')}finally{b.disabled=false;b.textContent='Remote activeren'}}
+  async function grant(){const d=tv(),pin=$('#secureRemotePin').value.trim();if(!d)return msg('Geen TV verbonden.','warning');if(!/^\d{4,8}$/.test(pin))return msg('Vul de PIN in die op de TV staat.','warning');const b=$('#secureRemoteGrant');b.disabled=true;b.textContent='Koppelen…';try{await api('/api/remote/pair/grant',{method:'POST',body:JSON.stringify({deviceId:d.id,pin})});setPaired(true);toast?.('Remote secure gekoppeld')}catch(e){msg('PIN koppelen mislukt: '+e.message,'warning')}finally{b.disabled=false;b.textContent='PIN bevestigen'}}
+  async function sendKey(key){const d=tv();if(!d)return;if(!paired){msg('Activeer eerst Remote met de PIN van je TV.','warning');toast?.('Ga naar Remote → Remote activeren');return}try{await api('/api/remote/key',{method:'POST',body:JSON.stringify({deviceId:d.id,key})});const n=$('#remoteNotice');if(n)n.classList.add('hidden')}catch(e){msg('Remote toets mislukt: '+e.message,'warning');if(/niet.*gekoppeld|credentials|401/i.test(e.message))setPaired(false)}}
+  async function sendVolume(value){const d=tv();if(!d||!paired)return;try{const r=await api('/api/remote/volume',{method:'POST',body:JSON.stringify({deviceId:d.id,volume:Number(value)})});const x=$('#volumeValue');if(x)x.textContent=String(r.current)}catch(e){msg('Volume mislukt: '+e.message,'warning')}}
+  async function toggleMute(){const d=tv();if(!d||!paired)return;try{const r=await api('/api/remote/mute',{method:'POST',body:JSON.stringify({deviceId:d.id})});lastMute=!!r.muted;const b=$('#muteBtn');if(b)b.textContent=lastMute?'Unmute':'Mute'}catch(e){msg('Mute mislukt: '+e.message,'warning')}}
+  function bind(){
+    $('#secureRemoteStart').addEventListener('click',startPair);$('#secureRemoteGrant').addEventListener('click',grant);$('#secureRemoteCancel').addEventListener('click',()=>$('#secureRemotePinBox').classList.add('hidden'));$('#secureRemotePin').addEventListener('keydown',e=>{if(e.key==='Enter')grant()});
+    document.addEventListener('click',e=>{const k=e.target.closest('[data-key]');if(!k)return;e.preventDefault();e.stopImmediatePropagation();sendKey(k.dataset.key)},true);
+    document.addEventListener('click',e=>{const b=e.target.closest('#muteBtn');if(!b)return;e.preventDefault();e.stopImmediatePropagation();if(!paired){msg('Activeer eerst Remote.','warning');return}toggleMute()},true);
+    document.addEventListener('input',e=>{if(e.target?.id!=='volumeSlider')return;e.stopImmediatePropagation();if(!paired)return;clearTimeout(volumeTimer);volumeTimer=setTimeout(()=>sendVolume(e.target.value),140)},true);
+    document.addEventListener('change',e=>{if(e.target?.id!=='volumeSlider')return;e.stopImmediatePropagation();if(paired)sendVolume(e.target.value)},true);
+    setInterval(()=>{if(paired)syncButtons()},900);
+  }
+  function boot(){inject();let n=0;const t=setInterval(()=>{n++;if(!$('#secureRemoteCard'))inject();if(tv())check();if(n>25)clearInterval(t)},700)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
+})();
