@@ -9,14 +9,7 @@ const originalPost=express.application.post;
 const originalGet=express.application.get;
 
 function readStore(){try{return JSON.parse(fs.readFileSync(STORE,'utf8'))}catch{return {devices:{}}}}
-function resolveDeviceId(id){
-  const devices=readStore().devices||{};
-  if(id&&devices[id])return id;
-  if(id){const byIp=Object.entries(devices).find(([,d])=>d?.ip===id||`philips:${d?.ip}`===id);if(byIp)return byIp[0]}
-  const ids=Object.keys(devices);
-  if(ids.length===1)return ids[0];
-  throw Object.assign(new Error(id?'Unknown saved TV':'Missing deviceId and no single saved TV could be selected automatically'),{status:404});
-}
+function resolveDeviceId(id){const devices=readStore().devices||{};if(id&&devices[id])return id;if(id){const byIp=Object.entries(devices).find(([,d])=>d?.ip===id||`philips:${d?.ip}`===id);if(byIp)return byIp[0]}const ids=Object.keys(devices);if(ids.length===1)return ids[0];throw Object.assign(new Error(id?'Unknown saved TV':'Missing deviceId and no single saved TV could be selected automatically'),{status:404})}
 function getDevice(id){const resolved=resolveDeviceId(id),d=readStore().devices?.[resolved];if(!d)throw Object.assign(new Error('Unknown saved TV'),{status:404});return {...d,id:resolved}}
 function cleanEndpoint(e){return String(e||'').replace(/^\/+|\/+$/g,'')}
 function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
@@ -24,57 +17,19 @@ function rgb(value){if(value&&typeof value==='object'&&Number.isFinite(value.r))
 function mix(a,b,t){a=rgb(a);b=rgb(b);return {r:Math.round(a.r+(b.r-a.r)*t),g:Math.round(a.g+(b.g-a.g)*t),b:Math.round(a.b+(b.b-a.b)*t)}}
 function ease(t,type){t=clamp(t,0,1);if(type==='linear')return t;if(type==='ease-in')return t*t;if(type==='ease-out')return 1-(1-t)*(1-t);return t*t*(3-2*t)}
 
-async function requestTv(d,endpoint,{method='GET',body,timeout=3500}={}){
-  const ep=cleanEndpoint(endpoint),preferred=Number(d.apiVersion||6),versions=[preferred,...[6,1].filter(v=>v!==preferred)],urls=[...new Set([...versions.map(v=>`http://${d.ip}:1925/${v}/${ep}`),`http://${d.ip}:1925/${ep}`])];
-  let last;
-  for(const url of urls){
-    try{
-      const r=await fetch(url,{method,headers:{Accept:'application/json','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(timeout)});
-      const text=await r.text();
-      if(r.ok){try{return text?JSON.parse(text):{}}catch{return {raw:text}}}
-      if(r.status===404){last=new Error(`HTTP 404 at ${new URL(url).pathname}`);continue}
-      throw Object.assign(new Error(`TV HTTP ${r.status}${text?`: ${text.slice(0,120)}`:''}`),{status:r.status});
-    }catch(e){last=e;if(e.status===404||/HTTP 404/.test(e.message))continue;throw e}
-  }
-  throw last||new Error(`No working route for ${ep}`)
-}
+async function requestTv(d,endpoint,{method='GET',body,timeout=3500}={}){const ep=cleanEndpoint(endpoint),preferred=Number(d.apiVersion||6),versions=[preferred,...[6,1].filter(v=>v!==preferred)],urls=[...new Set([...versions.map(v=>`http://${d.ip}:1925/${v}/${ep}`),`http://${d.ip}:1925/${ep}`])];let last;for(const url of urls){try{const r=await fetch(url,{method,headers:{Accept:'application/json','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(timeout)}),text=await r.text();if(r.ok){try{return text?JSON.parse(text):{}}catch{return {raw:text}}}if(r.status===404){last=new Error(`HTTP 404 at ${new URL(url).pathname}`);continue}throw Object.assign(new Error(`TV HTTP ${r.status}${text?`: ${text.slice(0,120)}`:''}`),{status:r.status})}catch(e){last=e;if(e.status===404||/HTTP 404/.test(e.message))continue;throw e}}throw last||new Error(`No working route for ${ep}`)}
 
-function normalizeAnimation(a){
-  if(!a||!Array.isArray(a.frames)||a.frames.length<2)throw new Error('Maak minimaal 2 stappen voordat je afspeelt.');
-  const duration=clamp(Number(a.duration)||5,.2,300),fps=clamp(Math.round(Number(a.fps)||12),4,25);
-  const frames=a.frames.map(f=>({time:clamp(Number(f.time)||0,0,duration),pixels:f.pixels&&typeof f.pixels==='object'?f.pixels:{}})).sort((x,y)=>x.time-y.time);
-  if(frames[0].time!==0)frames.unshift({time:0,pixels:{...frames[0].pixels}});
-  if(frames.at(-1).time<duration)frames.push({time:duration,pixels:{...frames.at(-1).pixels}});
-  return {...a,duration,fps,frames,easing:['linear','ease-in','ease-out','smoothstep'].includes(a.easing)?a.easing:'smoothstep',loop:a.loop!==false,pingpong:!!a.pingpong}
-}
+function unpackAnimation(raw){let a=raw;if(typeof a==='string'){try{a=JSON.parse(a)}catch{}}if(a?.animation&&typeof a.animation==='object')a=a.animation;else if(a?.timeline&&typeof a.timeline==='object'&&!a.frames)a=a.timeline;return a&&typeof a==='object'?a:{}}
+function frameArray(a){let fs=a.frames??a.steps??a.keyframes??a.moments;if(Array.isArray(fs))return fs;if(fs&&typeof fs==='object')return Object.values(fs);return []}
+function normalizeAnimation(raw){const a=unpackAnimation(raw);let incoming=frameArray(a).filter(Boolean);if(!incoming.length)throw new Error('Geen geldige momenten ontvangen. Sla de animatie opnieuw op.');const duration=clamp(Number(a.duration)||Math.max(1,...incoming.map(f=>Number(f.time??f.at??f.second??0))),.2,300),fps=clamp(Math.round(Number(a.fps)||12),4,25);let frames=incoming.map((f,i)=>({time:clamp(Number(f.time??f.at??f.second??i*.5)||0,0,duration),pixels:(f.pixels||f.leds||f.colors)&&typeof (f.pixels||f.leds||f.colors)==='object'?(f.pixels||f.leds||f.colors):{}})).sort((x,y)=>x.time-y.time);if(frames.length===1){const only=frames[0];frames=[{time:0,pixels:{...only.pixels}},{time:duration,pixels:{...only.pixels}}]}else{if(frames[0].time!==0)frames.unshift({time:0,pixels:{...frames[0].pixels}});if(frames.at(-1).time<duration)frames.push({time:duration,pixels:{...frames.at(-1).pixels}})}console.log(`[AMBI CUSTOM] received ${incoming.length} moments -> normalized ${frames.length}`);return {...a,duration,fps,frames,easing:['linear','ease-in','ease-out','smoothstep'].includes(a.easing)?a.easing:'smoothstep',loop:a.loop!==false,pingpong:!!a.pingpong}}
 function topologyIds(t){const ids=[];for(const side of ['left','top','right'])for(let i=0;i<Number(t[side]||0);i++)ids.push(`${side}:${i}`);return ids}
-function sample(anim,t,ids){
-  const fs=anim.frames;let a=fs[0],b=fs[fs.length-1];
-  if(t<=fs[0].time){a=b=fs[0]}else if(t>=fs.at(-1).time){a=b=fs.at(-1)}else{for(let i=0;i<fs.length-1;i++){if(t>=fs[i].time&&t<=fs[i+1].time){a=fs[i];b=fs[i+1];break}}}
-  const k=a===b?0:ease((t-a.time)/Math.max(.001,b.time-a.time),anim.easing),out={};for(const id of ids)out[id]=a===b?rgb(a.pixels[id]):mix(a.pixels[id],b.pixels[id],k);return out
-}
+function sample(anim,t,ids){const fs=anim.frames;let a=fs[0],b=fs[fs.length-1];if(t<=fs[0].time){a=b=fs[0]}else if(t>=fs.at(-1).time){a=b=fs.at(-1)}else{for(let i=0;i<fs.length-1;i++){if(t>=fs[i].time&&t<=fs[i+1].time){a=fs[i];b=fs[i+1];break}}}const k=a===b?0:ease((t-a.time)/Math.max(.001,b.time-a.time),anim.easing),out={};for(const id of ids)out[id]=a===b?rgb(a.pixels[id]):mix(a.pixels[id],b.pixels[id],k);return out}
 function layerFromPixels(t,p){const layer1={};for(const side of ['left','top','right']){const n=Number(t[side]||0);if(!n)continue;const out={};for(let i=0;i<n;i++)out[String(i)]=rgb(p[`${side}:${i}`]);layer1[side]=out}if(Number(t.bottom||0)>0){const o={};for(let i=0;i<Number(t.bottom);i++)o[String(i)]={r:0,g:0,b:0};layer1.bottom=o}return {layer1}}
 function stop(id){let resolved=id;try{resolved=resolveDeviceId(id)}catch{}const s=sessions.get(resolved);if(s){s.running=false;if(s.timer)clearTimeout(s.timer);sessions.delete(resolved);console.log(`[AMBI CUSTOM] stopped ${resolved}`)}return {ok:true,running:false}}
 
-async function start(deviceId,rawAnimation){
-  const d=getDevice(deviceId),resolved=d.id;stop(resolved);
-  const anim=normalizeAnimation(rawAnimation),topology=await requestTv(d,'ambilight/topology');
-  if(!topology.left&&!topology.top&&!topology.right)throw new Error('Deze TV meldt geen bewerkbare Ambilight LEDs.');
-  await requestTv(d,'ambilight/power',{method:'POST',body:{power:'On'}}).catch(()=>{});await requestTv(d,'ambilight/mode',{method:'POST',body:{current:'manual'}});
-  const ids=topologyIds(topology),session={running:true,deviceId:resolved,animation:anim,topology,started:Date.now(),frames:0,lastError:null,timer:null};sessions.set(resolved,session);
-  const frameMs=Math.max(40,Math.round(1000/anim.fps));
-  const loop=async()=>{if(!session.running)return;const elapsed=(Date.now()-session.started)/1000;let t=elapsed;if(anim.pingpong){const cycle=anim.duration*2,part=elapsed%cycle;t=part<=anim.duration?part:cycle-part}else if(anim.loop)t=elapsed%anim.duration;else if(t>anim.duration){stop(resolved);return}const started=Date.now();try{await requestTv(d,'ambilight/cached',{method:'POST',body:layerFromPixels(topology,sample(anim,t,ids)),timeout:2500});session.frames++;session.lastError=null}catch(e){session.lastError=e.message;session.running=false;sessions.delete(resolved);console.error(`[AMBI CUSTOM] ${e.message}`);return}session.timer=setTimeout(loop,Math.max(5,frameMs-(Date.now()-started)))};
-  loop();console.log(`[AMBI CUSTOM] ${anim.emoji||'✨'} ${anim.title||'Custom'} started • ${anim.frames.length} keyframes • ${anim.fps} FPS • ${resolved}`);
-  return {ok:true,running:true,deviceId:resolved,title:anim.title||'Custom animation',emoji:anim.emoji||'✨',duration:anim.duration,fps:anim.fps,topology}
-}
+async function start(deviceId,rawAnimation){const d=getDevice(deviceId),resolved=d.id;stop(resolved);const anim=normalizeAnimation(rawAnimation),topology=await requestTv(d,'ambilight/topology');if(!topology.left&&!topology.top&&!topology.right)throw new Error('Deze TV meldt geen bewerkbare Ambilight LEDs.');await requestTv(d,'ambilight/power',{method:'POST',body:{power:'On'}}).catch(()=>{});await requestTv(d,'ambilight/mode',{method:'POST',body:{current:'manual'}});const ids=topologyIds(topology),session={running:true,deviceId:resolved,animation:anim,topology,started:Date.now(),frames:0,lastError:null,timer:null};sessions.set(resolved,session);const frameMs=Math.max(40,Math.round(1000/anim.fps));const loop=async()=>{if(!session.running)return;const elapsed=(Date.now()-session.started)/1000;let t=elapsed;if(anim.pingpong){const cycle=anim.duration*2,part=elapsed%cycle;t=part<=anim.duration?part:cycle-part}else if(anim.loop)t=elapsed%anim.duration;else if(t>anim.duration){stop(resolved);return}const started=Date.now();try{await requestTv(d,'ambilight/cached',{method:'POST',body:layerFromPixels(topology,sample(anim,t,ids)),timeout:2500});session.frames++;session.lastError=null}catch(e){session.lastError=e.message;session.running=false;sessions.delete(resolved);console.error(`[AMBI CUSTOM] ${e.message}`);return}session.timer=setTimeout(loop,Math.max(5,frameMs-(Date.now()-started)))};loop();console.log(`[AMBI CUSTOM] ${anim.emoji||'✨'} ${anim.title||'Custom'} started • ${anim.frames.length} keyframes • ${anim.fps} FPS • ${resolved}`);return {ok:true,running:true,deviceId:resolved,title:anim.title||'Custom animation',emoji:anim.emoji||'✨',duration:anim.duration,fps:anim.fps,moments:anim.frames.length,topology}}
 function status(id){let resolved;try{resolved=resolveDeviceId(id)}catch{return {running:false}}const s=sessions.get(resolved);return s?{running:s.running,deviceId:resolved,title:s.animation.title,emoji:s.animation.emoji,frames:s.frames,fps:s.animation.fps,duration:s.animation.duration,lastError:s.lastError}:{running:false,deviceId:resolved}}
 
-function install(app){
-  if(app.__customAnimationsInstalled)return;app.__customAnimationsInstalled=true;
-  originalPost.call(app,'/api/ambilight/custom/start',async(req,res)=>{try{const body=req.body||{},deviceId=body.deviceId||body.device||body.tvId;res.json(await start(deviceId,body.animation))}catch(e){res.status(e.status||400).json({error:e.message,code:'custom_animation_error'})}});
-  originalPost.call(app,'/api/ambilight/custom/stop',(req,res)=>{try{res.json(stop(req.body?.deviceId||req.body?.device||req.body?.tvId))}catch(e){res.status(400).json({error:e.message})}});
-  originalGet.call(app,'/api/ambilight/custom/status',(req,res)=>{try{res.json(status(req.query?.deviceId||req.query?.device||req.query?.tvId))}catch(e){res.status(400).json({error:e.message})}});
-  console.log('[AMBI] Custom timeline routes installed v2');
-}
+function install(app){if(app.__customAnimationsInstalled)return;app.__customAnimationsInstalled=true;originalPost.call(app,'/api/ambilight/custom/start',async(req,res)=>{try{const body=req.body||{},deviceId=body.deviceId||body.device||body.tvId,animation=body.animation??body.anim??body.timeline??body;res.json(await start(deviceId,animation))}catch(e){res.status(e.status||400).json({error:e.message,code:'custom_animation_error'})}});originalPost.call(app,'/api/ambilight/custom/stop',(req,res)=>{try{res.json(stop(req.body?.deviceId||req.body?.device||req.body?.tvId))}catch(e){res.status(400).json({error:e.message})}});originalGet.call(app,'/api/ambilight/custom/status',(req,res)=>{try{res.json(status(req.query?.deviceId||req.query?.device||req.query?.tvId))}catch(e){res.status(400).json({error:e.message})}});console.log('[AMBI] Custom timeline routes installed v3')}
 express.application.use=function(...args){install(this);return originalUse.apply(this,args)};
-console.log('[AMBI] Custom timeline animation engine ready v2');
+console.log('[AMBI] Custom timeline animation engine ready v3');
