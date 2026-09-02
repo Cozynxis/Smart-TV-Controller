@@ -48,11 +48,11 @@ function rawHttpsResponseOnce(url,{method='GET',body,headers={}}={}){
       path:u.pathname+u.search,
       method,
       rejectUnauthorized:false,
-      timeout:8000,
+      timeout:10000,
       agent:false,
       headers:{
         Accept:'application/json',
-        'User-Agent':'Smart-TV-Controller/0.3.2',
+        'User-Agent':'Smart-TV-Controller/0.3.3',
         ...(payload!==null?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}:{'Content-Length':'0'}),
         ...headers
       }
@@ -79,8 +79,9 @@ async function rawHttpsResponse(url,opts={},retries=2){
     try{return await rawHttpsResponseOnce(url,opts)}
     catch(e){
       last=e;
-      if(!isResetError(e)||attempt===retries)throw e;
-      await wait(180+attempt*220);
+      const retryable=isResetError(e)||/timed out/i.test(e.message||'');
+      if(!retryable||attempt===retries)throw e;
+      await wait(250+attempt*350);
     }
   }
   throw last;
@@ -132,22 +133,9 @@ function buildDigestAuthorization(url,method,credentials,challenge){
 
 async function getDigestChallenge(url,{method='GET',body,headers={}}={}){
   const methodUpper=String(method||'GET').toUpperCase();
-  let first;
-  try{
-    first=await rawHttpsResponse(url,{method:methodUpper,body:undefined,headers});
-  }catch(e){
-    if(!isResetError(e))throw e;
-    await wait(250);
-    first=await rawHttpsResponse(url,{method:methodUpper,body,headers});
-  }
+  const first=await rawHttpsResponse(url,{method:methodUpper,body:undefined,headers},1);
   if(first.status===401&&first.headers['www-authenticate'])return first.headers['www-authenticate'];
   if(first.status>=200&&first.status<300)return null;
-  if(first.status===400||first.status===404||first.status===405){
-    const retry=await rawHttpsResponse(url,{method:methodUpper,body,headers});
-    if(retry.status===401&&retry.headers['www-authenticate'])return retry.headers['www-authenticate'];
-    if(retry.status>=200&&retry.status<300)return null;
-    throw new Error(retry.data.error_text||retry.data.error||retry.data.message||`TV returned HTTP ${retry.status}`);
-  }
   throw new Error(first.data.error_text||first.data.error||first.data.message||`TV returned HTTP ${first.status}`);
 }
 
@@ -162,25 +150,18 @@ async function digestHttpsJson(url,{method='GET',body,headers={}}={},credentials
     throw new Error(direct.data.error_text||direct.data.error||direct.data.message||`TV returned HTTP ${direct.status}`);
   }
   const authorization=buildDigestAuthorization(url,methodUpper,credentials,challenge);
-  let second;
-  try{
-    second=await rawHttpsResponse(url,{method:methodUpper,body,headers:{...headers,Authorization:authorization}},3);
-  }catch(e){e.message=`Authenticated TV request failed: ${e.message}`;throw e}
+  let second=await rawHttpsResponse(url,{method:methodUpper,body,headers:{...headers,Authorization:authorization}},2);
   if(second.status===401&&second.headers['www-authenticate']){
     const freshAuth=buildDigestAuthorization(url,methodUpper,credentials,second.headers['www-authenticate']);
-    await wait(180);
-    second=await rawHttpsResponse(url,{method:methodUpper,body,headers:{...headers,Authorization:freshAuth}},2);
+    await wait(200);
+    second=await rawHttpsResponse(url,{method:methodUpper,body,headers:{...headers,Authorization:freshAuth}},1);
   }
-  if(second.status<200||second.status>=300){
-    throw new Error(second.data.error_text||second.data.error||second.data.message||`TV returned HTTP ${second.status}`);
-  }
+  if(second.status<200||second.status>=300)throw new Error(second.data.error_text||second.data.error||second.data.message||`TV returned HTTP ${second.status}`);
   return second.data;
 }
 
 async function fetchJson(url,opts={},credentials){
-  if(credentials?.username&&credentials?.password&&url.startsWith('https://')){
-    return digestHttpsJson(url,{method:opts.method||'GET',body:opts.body,headers:opts.headers||{}},credentials);
-  }
+  if(credentials?.username&&credentials?.password&&url.startsWith('https://'))return digestHttpsJson(url,{method:opts.method||'GET',body:opts.body,headers:opts.headers||{}},credentials);
   if(url.startsWith('https://'))return rawHttpsJson(url,{method:opts.method||'GET',body:opts.body,headers:opts.headers||{}});
   const finalOpts={...opts,signal:opts.signal||timeoutSignal(4000)};
   const response=await fetch(url,finalOpts);
@@ -193,9 +174,7 @@ async function fetchJson(url,opts={},credentials){
 function philipsBase(d,secure=true){return secure?`https://${d.ip}:1926/6/`:`http://${d.ip}:1925/1/`}
 async function philipsRequest(d,endpoint,{method='GET',body}={}){
   const creds=d.credentials;
-  if(creds?.username&&creds?.password){
-    return fetchJson(philipsBase(d,true)+endpoint,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined},creds);
-  }
+  if(creds?.username&&creds?.password)return fetchJson(philipsBase(d,true)+endpoint,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined},creds);
   try{return await fetchJson(philipsBase(d,false)+endpoint,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined})}
   catch{throw new Error('This Philips TV requires one-time PIN pairing.')}
 }
@@ -227,8 +206,22 @@ async function philipsPairGrant(ip,pin){
   if(!/^\d{4,8}$/.test(cleanPin))throw new Error('Enter the PIN shown on the TV.');
   const body={auth:{auth_AppId:'1',pin:cleanPin,auth_timestamp:state.timestamp,auth_signature:pairingSignature(state.timestamp,cleanPin)},device:pairingDevice(state.deviceId)};
   const credentials={username:state.deviceId,password:state.authKey};
-  console.log(`[PAIR] Granting ${ip} using native digest preflight...`);
-  const data=await digestHttpsJson(`https://${ip}:1926/6/pair/grant`,{method:'POST',body,headers:{'Content-Type':'application/json'}},credentials);
+  const grantUrl=`https://${ip}:1926/6/pair/grant`;
+  const challengeUrl=`https://${ip}:1926/6/system`;
+  console.log(`[PAIR] Getting Digest challenge from /6/system for ${ip}...`);
+  const probe=await rawHttpsResponse(challengeUrl,{method:'GET'},2);
+  if(probe.status!==401||!probe.headers['www-authenticate'])throw new Error(`Could not get Philips Digest challenge from /6/system (HTTP ${probe.status}).`);
+  let authorization=buildDigestAuthorization(grantUrl,'POST',credentials,probe.headers['www-authenticate']);
+  console.log(`[PAIR] Sending authenticated grant to ${ip}...`);
+  let grant=await rawHttpsResponse(grantUrl,{method:'POST',body,headers:{'Content-Type':'application/json',Authorization:authorization}},2);
+  if(grant.status===401&&grant.headers['www-authenticate']){
+    console.log('[PAIR] TV returned a fresh nonce; retrying grant once...');
+    authorization=buildDigestAuthorization(grantUrl,'POST',credentials,grant.headers['www-authenticate']);
+    await wait(250);
+    grant=await rawHttpsResponse(grantUrl,{method:'POST',body,headers:{'Content-Type':'application/json',Authorization:authorization}},1);
+  }
+  if(grant.status<200||grant.status>=300)throw new Error(grant.data.error_text||grant.data.error||grant.data.message||`Pairing failed (HTTP ${grant.status})`);
+  const data=grant.data;
   if(data.error_id&&data.error_id!=='SUCCESS')throw new Error(data.error_text||data.error_id||'Incorrect PIN or pairing rejected');
   let d=saveDevice({...(getSaved(`philips:${ip}`)||{}),id:`philips:${ip}`,ip,brand:'philips',credentials,pairingPending:false,paired:true});
   try{const s=await philipsSystem(d);d=saveDevice({...d,name:s.name||d.name||'Philips TV',model:s.model||d.model||'Smart TV',apiVersion:s.api_version||6})}catch(e){console.warn('Pairing succeeded but system read failed:',e.message)}
@@ -256,7 +249,7 @@ async function ssdpDiscover(timeout=3000){return new Promise(resolve=>{const cli
 async function subnetPhilipsScan(){const subnets=localSubnets();const found=[];for(const subnet of subnets){const ips=Array.from({length:254},(_,i)=>`${subnet}.${i+1}`);for(let start=0;start<ips.length;start+=32){const batch=ips.slice(start,start+32);const matches=await Promise.all(batch.map(probePhilips));found.push(...matches.filter(Boolean))}}return found}
 async function discover(){const map=new Map();const ssdp=await ssdpDiscover();ssdp.forEach(d=>map.set(d.ip,d));const philips=await subnetPhilipsScan();philips.forEach(d=>map.set(d.ip,{...(map.get(d.ip)||{}),...d}));return [...map.values()].filter(d=>d.brand==='philips'||d.brand!=='generic')}
 
-app.get('/api/health',(req,res)=>res.json({ok:true,name:'Smart TV Controller Bridge',version:'0.3.2',time:new Date().toISOString(),localIPv4s:localIPv4s(),subnets:localSubnets(),pairing:'automatic-pin-digest-retry'}));
+app.get('/api/health',(req,res)=>res.json({ok:true,name:'Smart TV Controller Bridge',version:'0.3.3',time:new Date().toISOString(),localIPv4s:localIPv4s(),subnets:localSubnets(),pairing:'system-challenge-direct-grant'}));
 app.get('/api/network',(req,res)=>res.json({localIPv4s:localIPv4s(),subnets:localSubnets(),hostname:os.hostname()}));
 app.post('/api/discover',async(req,res)=>{try{res.json({devices:await discover()})}catch(e){console.error('Discovery error:',e);res.status(500).json({error:e.message})}});
 app.post('/api/pair/request',async(req,res)=>{try{const ip=String(req.body?.ip||'').trim();if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip))throw new Error('Enter a valid TV IP address');res.json(await philipsPairRequest(ip))}catch(e){console.error('Pair request error:',e);res.status(400).json({error:e.message})}});
@@ -274,12 +267,12 @@ app.get('*',(req,res)=>res.sendFile(path.join(ROOT,'index.html')));
 
 const server=app.listen(PORT,'0.0.0.0',()=>{
   console.log('\n================================================');
-  console.log(' Smart TV Controller Bridge v0.3.2');
+  console.log(' Smart TV Controller Bridge v0.3.3');
   console.log(` Open app:   http://localhost:${PORT}`);
   console.log(` Health:     http://localhost:${PORT}/api/health`);
   console.log(` Local IPs:  ${localIPv4s().join(', ')||'none detected'}`);
   console.log(` Scan nets:  ${localSubnets().map(x=>x+'.0/24').join(', ')||'none detected'}`);
-  console.log(' Pairing:    PIN + Digest preflight + reset retry');
+  console.log(' Pairing:    /6/system challenge -> direct authenticated grant');
   console.log('================================================\n');
 });
 server.on('error',e=>{console.error('Bridge could not start:',e.message);process.exitCode=1});
