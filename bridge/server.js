@@ -6,6 +6,7 @@ const path=require('path');
 const os=require('os');
 const http=require('http');
 const https=require('https');
+const crypto=require('crypto');
 const DigestModule=require('digest-fetch');
 const DigestFetch=DigestModule.default||DigestModule;
 
@@ -13,6 +14,8 @@ const app=express();
 const PORT=Number(process.env.PORT||8765);
 const STORE=path.join(__dirname,'devices.local.json');
 const ROOT=path.resolve(__dirname,'..');
+const PAIR_SECRET='ZmVay1EQVFOaZhwQ4Kv81ypLAZNczV9sG4KkseXWn1NEk6cXmPKO/MCa9sryslvLCFMnNe4Z4CPXzToowvhHvA==';
+const pairSessions=new Map();
 
 app.disable('x-powered-by');
 app.use((req,res,next)=>{
@@ -34,15 +37,37 @@ function saveDevice(d){const id=idFor(d);store.devices[id]={...(store.devices[id
 
 const insecureAgent=new https.Agent({rejectUnauthorized:false});
 function timeoutSignal(ms=2500){return typeof AbortSignal!=='undefined'&&AbortSignal.timeout?AbortSignal.timeout(ms):undefined}
+function parseJson(text){try{return text?JSON.parse(text):{}}catch{return {raw:text}}}
+
+function rawHttpsJson(url,{method='GET',body,headers={}}={}){
+  return new Promise((resolve,reject)=>{
+    const u=new URL(url);
+    const payload=body===undefined?null:(typeof body==='string'?body:JSON.stringify(body));
+    const req=https.request({hostname:u.hostname,port:u.port||443,path:u.pathname+u.search,method,rejectUnauthorized:false,timeout:5000,headers:{Accept:'application/json',...(payload?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}:{}),...headers}},res=>{
+      let text='';res.setEncoding('utf8');res.on('data',c=>text+=c);res.on('end',()=>{
+        const data=parseJson(text);
+        if(res.statusCode<200||res.statusCode>=300)return reject(Object.assign(new Error(data.error||data.message||`TV returned HTTP ${res.statusCode}`),{status:res.statusCode,data}));
+        resolve(data);
+      });
+    });
+    req.on('timeout',()=>req.destroy(new Error('TV request timed out')));
+    req.on('error',reject);
+    if(payload)req.write(payload);
+    req.end();
+  });
+}
+
 async function fetchJson(url,opts={},credentials){
   let response;
-  const finalOpts={...opts,signal:opts.signal||timeoutSignal(3000)};
+  const finalOpts={...opts,signal:opts.signal||timeoutSignal(4000)};
   if(credentials?.username&&credentials?.password){
     const client=new DigestFetch(credentials.username,credentials.password,{basic:false});
     response=await client.fetch(url,{...finalOpts,agent:insecureAgent});
+  }else if(url.startsWith('https://')){
+    return rawHttpsJson(url,{method:opts.method||'GET',body:opts.body,headers:opts.headers});
   }else response=await fetch(url,finalOpts);
   const text=await response.text();
-  let data={};try{data=text?JSON.parse(text):{}}catch{data={raw:text}}
+  const data=parseJson(text);
   if(!response.ok)throw new Error(data.error||data.message||`TV returned HTTP ${response.status}`);
   return data;
 }
@@ -56,8 +81,47 @@ async function philipsRequest(d,endpoint,{method='GET',body}={}){
   try{
     return await fetchJson(philipsBase(d,false)+endpoint,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
   }catch(legacyError){
-    throw new Error('This Philips TV appears to require JointSpace v6 pairing. Open /pair.html, enter the TV IP and save the generated/known JointSpace credentials.');
+    throw new Error('This Philips TV requires one-time PIN pairing.');
   }
+}
+
+function randomDeviceId(){
+  const chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let out='';for(let i=0;i<16;i++)out+=chars[crypto.randomInt(0,chars.length)];return out;
+}
+function pairingDevice(deviceId){return {device_name:'Smart TV Controller',device_os:process.platform==='win32'?'Windows':'Desktop',app_name:'Smart TV Controller',type:'native',app_id:'app.id',id:deviceId}}
+function pairingSignature(timestamp,pin){
+  const key=Buffer.from(PAIR_SECRET,'base64');
+  const hex=crypto.createHmac('sha1',key).update(String(timestamp)+String(pin)).digest('hex');
+  return Buffer.from(hex,'utf8').toString('base64');
+}
+async function philipsPairRequest(ip){
+  const deviceId=randomDeviceId();
+  const body={scope:['read','write','control'],device:pairingDevice(deviceId)};
+  const response=await rawHttpsJson(`https://${ip}:1926/6/pair/request`,{method:'POST',body});
+  if(response.error_id&&response.error_id!=='SUCCESS')throw new Error(response.error_text||response.error_id||'TV rejected pairing request');
+  if(!response.auth_key||response.timestamp===undefined)throw new Error('TV did not return pairing credentials.');
+  const state={ip,deviceId,authKey:response.auth_key,timestamp:response.timestamp,createdAt:Date.now(),timeout:response.timeout||60};
+  pairSessions.set(ip,state);
+  saveDevice({id:`philips:${ip}`,ip,brand:'philips',name:'Philips TV',pairingPending:true});
+  return {ok:true,ip,timeout:state.timeout,message:'PIN requested. Check the TV screen.'};
+}
+async function philipsPairGrant(ip,pin){
+  const state=pairSessions.get(ip);
+  if(!state)throw new Error('No active pairing request. Click Request PIN first.');
+  if(Date.now()-state.createdAt>Math.max(120000,Number(state.timeout||60)*1000+30000)){pairSessions.delete(ip);throw new Error('Pairing request expired. Request a new PIN.');}
+  if(!/^\d{4,8}$/.test(String(pin).trim()))throw new Error('Enter the PIN shown on the TV.');
+  const body={auth:{auth_AppId:'1',pin:String(pin).trim(),auth_timestamp:state.timestamp,auth_signature:pairingSignature(state.timestamp,String(pin).trim())},device:pairingDevice(state.deviceId)};
+  const credentials={username:state.deviceId,password:state.authKey};
+  const client=new DigestFetch(credentials.username,credentials.password,{basic:false});
+  const response=await client.fetch(`https://${ip}:1926/6/pair/grant`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),agent:insecureAgent});
+  const text=await response.text();const data=parseJson(text);
+  if(!response.ok)throw new Error(data.error_text||data.error||data.message||`Pairing failed (HTTP ${response.status})`);
+  if(data.error_id&&data.error_id!=='SUCCESS')throw new Error(data.error_text||data.error_id||'Incorrect PIN or pairing rejected');
+  let d=saveDevice({...(getSaved(`philips:${ip}`)||{}),id:`philips:${ip}`,ip,brand:'philips',credentials,pairingPending:false,paired:true});
+  try{const s=await philipsSystem(d);d=saveDevice({...d,name:s.name||d.name||'Philips TV',model:s.model||d.model||'Smart TV',apiVersion:s.api_version||6})}catch(e){console.warn('Pairing succeeded but system read failed:',e.message)}
+  pairSessions.delete(ip);
+  return {ok:true,device:{...d,credentials:undefined},message:'Paired and connected.'};
 }
 
 const KEY_MAP={Standby:'Standby',Mute:'Mute',Home:'Home',Source:'Source',Options:'Options',CursorUp:'CursorUp',CursorDown:'CursorDown',CursorLeft:'CursorLeft',CursorRight:'CursorRight',Confirm:'Confirm',Back:'Back',Info:'Info',VolumeDown:'VolumeDown',VolumeUp:'VolumeUp',Rewind:'Rewind',PlayPause:'PlayPause',FastForward:'FastForward',Guide:'Guide',Settings:'Adjust',ChannelStepUp:'ChannelStepUp',ChannelStepDown:'ChannelStepDown',Digit0:'Digit0',Digit1:'Digit1',Digit2:'Digit2',Digit3:'Digit3',Digit4:'Digit4',Digit5:'Digit5',Digit6:'Digit6',Digit7:'Digit7',Digit8:'Digit8',Digit9:'Digit9'};
@@ -136,10 +200,12 @@ async function discover(){
   return [...map.values()].filter(d=>d.brand==='philips'||d.brand!=='generic');
 }
 
-app.get('/api/health',(req,res)=>res.json({ok:true,name:'Smart TV Controller Bridge',version:'0.2.0',time:new Date().toISOString(),localIPv4s:localIPv4s(),subnets:localSubnets()}));
+app.get('/api/health',(req,res)=>res.json({ok:true,name:'Smart TV Controller Bridge',version:'0.3.0',time:new Date().toISOString(),localIPv4s:localIPv4s(),subnets:localSubnets(),pairing:'automatic-pin'}));
 app.get('/api/network',(req,res)=>res.json({localIPv4s:localIPv4s(),subnets:localSubnets(),hostname:os.hostname()}));
 app.post('/api/discover',async(req,res)=>{try{res.json({devices:await discover()})}catch(e){console.error('Discovery error:',e);res.status(500).json({error:e.message})}});
-app.post('/api/connect',async(req,res)=>{try{const incoming=req.body||{};if(!incoming.ip)throw new Error('Missing TV IP address');let d=saveDevice({...incoming,brand:(incoming.brand||'philips').toLowerCase(),id:idFor(incoming)});if(adapter(d)==='philips'){try{const s=await philipsSystem(d);d=saveDevice({...d,name:s.name||d.name,model:s.model||d.model,apiVersion:s.api_version||null})}catch(e){if(!d.credentials)return res.status(401).json({error:e.message,needsCredentials:true,device:{...d,credentials:undefined}});throw e}}else throw new Error('This TV was found, but its adapter is not supported yet. Philips JointSpace is implemented first.');res.json({ok:true,device:{...d,credentials:undefined}})}catch(e){res.status(400).json({error:e.message})}});
+app.post('/api/pair/request',async(req,res)=>{try{const ip=String(req.body?.ip||'').trim();if(!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip))throw new Error('Enter a valid TV IP address');res.json(await philipsPairRequest(ip))}catch(e){console.error('Pair request error:',e);res.status(400).json({error:e.message})}});
+app.post('/api/pair/grant',async(req,res)=>{try{const ip=String(req.body?.ip||'').trim(),pin=String(req.body?.pin||'').trim();res.json(await philipsPairGrant(ip,pin))}catch(e){console.error('Pair grant error:',e);res.status(400).json({error:e.message})}});
+app.post('/api/connect',async(req,res)=>{try{const incoming=req.body||{};if(!incoming.ip)throw new Error('Missing TV IP address');let d=saveDevice({...incoming,brand:(incoming.brand||'philips').toLowerCase(),id:idFor(incoming)});if(adapter(d)==='philips'){try{const s=await philipsSystem(d);d=saveDevice({...d,name:s.name||d.name,model:s.model||d.model,apiVersion:s.api_version||null})}catch(e){if(!d.credentials)return res.status(401).json({error:'This Philips TV needs one-time PIN pairing.',needsPairing:true,needsCredentials:true,device:{...d,credentials:undefined}});throw e}}else throw new Error('This TV was found, but its adapter is not supported yet. Philips JointSpace is implemented first.');res.json({ok:true,device:{...d,credentials:undefined}})}catch(e){res.status(400).json({error:e.message})}});
 app.post('/api/credentials',(req,res)=>{try{const {deviceId,ip,brand='philips',username,password}=req.body;if(!username||!password)throw new Error('Username and password are required');const id=deviceId||`${brand}:${ip}`;const d=getSaved(id)||{id,ip,brand};saveDevice({...d,credentials:{username,password}});res.json({ok:true})}catch(e){res.status(400).json({error:e.message})}});
 app.get('/api/status',async(req,res)=>{try{const d=getSaved(req.query.deviceId);if(!d)throw new Error('Unknown device');res.json(await philipsStatus(d))}catch(e){res.status(400).json({error:e.message})}});
 app.post('/api/key',async(req,res)=>{try{const d=getSaved(req.body.deviceId);if(!d)throw new Error('Unknown device');await philipsKey(d,req.body.key);res.json({ok:true})}catch(e){res.status(400).json({error:e.message})}});
@@ -152,11 +218,12 @@ app.get('*',(req,res)=>res.sendFile(path.join(ROOT,'index.html')));
 
 const server=app.listen(PORT,'0.0.0.0',()=>{
   console.log('\n================================================');
-  console.log(' Smart TV Controller Bridge v0.2.0');
+  console.log(' Smart TV Controller Bridge v0.3.0');
   console.log(` Open app:   http://localhost:${PORT}`);
   console.log(` Health:     http://localhost:${PORT}/api/health`);
   console.log(` Local IPs:  ${localIPv4s().join(', ')||'none detected'}`);
   console.log(` Scan nets:  ${localSubnets().map(x=>x+'.0/24').join(', ')||'none detected'}`);
+  console.log(' Pairing:    automatic Philips PIN flow');
   console.log('================================================\n');
 });
 server.on('error',e=>{console.error('Bridge could not start:',e.message);process.exitCode=1});
