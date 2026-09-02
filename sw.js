@@ -1,10 +1,10 @@
-const CACHE='smart-tv-controller-v8';
-const ASSETS=['./','./index.html','./css/style.css','./css/enhancements.css','./js/app.js','./js/enhancements.js','./manifest.json'];
+const CACHE='smart-tv-controller-v9';
+const ASSETS=['./','./index.html','./css/style.css','./css/enhancements.css','./css/animation-creator.css','./js/app.js','./js/enhancements.js','./js/animation-creator.js','./manifest.json'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)))});
 self.addEventListener('activate',e=>e.waitUntil(Promise.all([self.clients.claim(),caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))])));
 self.addEventListener('fetch',e=>{
   if(e.request.method!=='GET')return;
   const u=new URL(e.request.url);
-  if(u.pathname.endsWith('/pair.html')||u.pathname.startsWith('/api/')){e.respondWith(fetch(e.request,{cache:'no-store'}));return}
+  if(u.pathname.endsWith('/pair.html')||u.pathname.startsWith('/api/')||u.pathname.endsWith('/js/animation-creator.js')||u.pathname.endsWith('/css/animation-creator.css')){e.respondWith(fetch(e.request,{cache:'no-store'}));return}
   e.respondWith(fetch(e.request,{cache:'reload'}).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy));return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('./index.html'))));
 });
