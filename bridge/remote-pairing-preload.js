@@ -11,65 +11,32 @@ const KEY_ALIASES={Settings:'Adjust',Menu:'Options',Power:'Standby',PlayPause:'P
 
 function readStore(){try{return JSON.parse(fs.readFileSync(STORE,'utf8'))}catch{return {devices:{}}}}
 function writeStore(s){fs.writeFileSync(STORE,JSON.stringify(s,null,2))}
-function device(id){const d=readStore().devices?.[id];if(!d)throw Object.assign(new Error('TV is niet opgeslagen in de bridge.'),{status:404});return d}
-function saveCredentials(id,credentials){const s=readStore(),old=s.devices?.[id];if(!old)throw new Error('TV bestaat niet meer in devices.local.json');s.devices[id]={...old,credentials,paired:true,pairingPending:false,apiMode:old.apiMode||'http',remoteSecure:true};writeStore(s);return s.devices[id]}
+function resolveId(id){const devices=readStore().devices||{};if(id&&devices[id])return id;if(id){const hit=Object.entries(devices).find(([,d])=>d?.ip===id||`philips:${d?.ip}`===id);if(hit)return hit[0]}const ids=Object.keys(devices);if(ids.length===1)return ids[0];throw Object.assign(new Error('TV is niet opgeslagen in de bridge.'),{status:404})}
+function device(id){const rid=resolveId(id),d=readStore().devices?.[rid];if(!d)throw Object.assign(new Error('TV is niet opgeslagen in de bridge.'),{status:404});return {...d,id:rid}}
+function saveCredentials(id,credentials){const rid=resolveId(id),s=readStore(),old=s.devices?.[rid];if(!old)throw new Error('TV bestaat niet meer in devices.local.json');s.devices[rid]={...old,credentials,paired:true,pairingPending:false,apiMode:old.apiMode||'http',remoteSecure:true};writeStore(s);return s.devices[rid]}
 function parseJson(t){try{return t?JSON.parse(t):{}}catch{return {raw:t}}}
 function randomId(){const chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';let out='';for(let i=0;i<16;i++)out+=chars[crypto.randomInt(chars.length)];return out}
 function pairDevice(id){return {device_name:'Smart TV Controller Remote',device_os:process.platform==='win32'?'Windows':'Desktop',app_name:'Smart TV Controller',type:'native',app_id:'app.id',id}}
 function pairingSignature(ts,pin){const key=Buffer.from(PAIR_SECRET,'base64'),hex=crypto.createHmac('sha1',key).update(String(ts)+String(pin)).digest('hex');return Buffer.from(hex).toString('base64')}
-function httpsResponse(url,{method='GET',body,headers={},timeoutMs=7500}={}){return new Promise((resolve,reject)=>{const u=new URL(url),payload=body==null?null:(typeof body==='string'?body:JSON.stringify(body));const req=https.request({hostname:u.hostname,port:Number(u.port||443),path:u.pathname+u.search,method,rejectUnauthorized:false,timeout:timeoutMs,headers:{Accept:'application/json','User-Agent':'Smart-TV-Controller-Remote/1.1',...(payload!==null?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}:{}),...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',c=>text+=c);res.on('end',()=>resolve({status:res.statusCode||0,headers:res.headers,data:parseJson(text)}))});req.on('timeout',()=>req.destroy(Object.assign(new Error('TV secure request timed out'),{code:'ETIMEDOUT'})));req.on('error',reject);if(payload!==null)req.write(payload);req.end()})}
+function httpsResponse(url,{method='GET',body,headers={},timeoutMs=7500}={}){return new Promise((resolve,reject)=>{const u=new URL(url),payload=body==null?null:(typeof body==='string'?body:JSON.stringify(body));const req=https.request({hostname:u.hostname,port:Number(u.port||443),path:u.pathname+u.search,method,rejectUnauthorized:false,timeout:timeoutMs,headers:{Accept:'application/json','User-Agent':'Smart-TV-Controller-Remote/1.2',...(payload!==null?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}:{}),...headers}},res=>{let text='';res.setEncoding('utf8');res.on('data',c=>text+=c);res.on('end',()=>resolve({status:res.statusCode||0,headers:res.headers,data:parseJson(text)}))});req.on('timeout',()=>req.destroy(Object.assign(new Error('TV secure request timed out'),{code:'ETIMEDOUT'})));req.on('error',reject);if(payload!==null)req.write(payload);req.end()})}
 function parseDigest(header=''){const src=String(Array.isArray(header)?header[0]:header).replace(/^Digest\s+/i,''),o={};const re=/(\w+)=(?:"([^"]*)"|([^,\s]+))/g;let m;while((m=re.exec(src)))o[m[1].toLowerCase()]=m[2]??m[3];return o}
 function hash(alg,s){const a=String(alg||'MD5').toUpperCase(),n=a.startsWith('SHA-256')?'sha256':a.startsWith('SHA-512-256')?'sha512-256':'md5';return crypto.createHash(n).update(s).digest('hex')}
 function digestAuth(url,method,creds,challenge){const c=parseDigest(challenge);if(!c.realm||!c.nonce)throw new Error('Geen geldige Digest challenge van de TV.');const u=new URL(url),uri=u.pathname+u.search,alg=c.algorithm||'MD5',cnonce=crypto.randomBytes(8).toString('hex'),nc='00000001',qop=String(c.qop||'').split(',').map(x=>x.trim().replace(/^"|"$/g,'')).find(x=>x==='auth')||'';let ha1=hash(alg,`${creds.username}:${c.realm}:${creds.password}`);if(String(alg).toLowerCase().endsWith('-sess'))ha1=hash(alg,`${ha1}:${c.nonce}:${cnonce}`);const ha2=hash(alg,`${method}:${uri}`),response=qop?hash(alg,`${ha1}:${c.nonce}:${nc}:${cnonce}:${qop}:${ha2}`):hash(alg,`${ha1}:${c.nonce}:${ha2}`),parts=[`username="${creds.username}"`,`realm="${c.realm}"`,`nonce="${c.nonce}"`,`uri="${uri}"`,`response="${response}"`];if(c.algorithm)parts.push(`algorithm=${c.algorithm}`);if(c.opaque)parts.push(`opaque="${c.opaque}"`);if(qop)parts.push(`qop=${qop}`,`nc=${nc}`,`cnonce="${cnonce}"`);return `Digest ${parts.join(', ')}`}
 function challengeHeader(r){return r?.headers?.['www-authenticate']||r?.headers?.['WWW-Authenticate']||null}
-async function requestWithDigest(url,{method='GET',body,creds,timeoutMs=8500}={}){
-  let first=await httpsResponse(url,{method,body,timeoutMs});
-  if(first.status>=200&&first.status<300)return first;
-  const challenge=challengeHeader(first);
-  if(first.status!==401||!challenge)return first;
-  let auth=digestAuth(url,method,creds,challenge);
-  let second=await httpsResponse(url,{method,body,headers:{Authorization:auth},timeoutMs});
-  if(second.status===401&&challengeHeader(second)){
-    auth=digestAuth(url,method,creds,challengeHeader(second));
-    second=await httpsResponse(url,{method,body,headers:{Authorization:auth},timeoutMs});
-  }
-  return second
-}
-async function secureJson(d,endpoint,{method='GET',body}={}){
-  if(!d.credentials)throw Object.assign(new Error('Remote is nog niet veilig gekoppeld.'),{status:409});
-  const url=`https://${d.ip}:1926/6/${String(endpoint).replace(/^\//,'')}`;
-  const r=await requestWithDigest(url,{method,body,creds:d.credentials,timeoutMs:8500});
-  if(r.status<200||r.status>=300)throw Object.assign(new Error(r.data?.error_text||r.data?.error||r.data?.message||`Secure TV HTTP ${r.status}`),{status:r.status});
-  return r.data
-}
-async function beginPair(id){const d=device(id);const deviceId=randomId(),body={scope:['read','write','control'],device:pairDevice(deviceId)},r=await httpsResponse(`https://${d.ip}:1926/6/pair/request`,{method:'POST',body,timeoutMs:8000});if(r.status<200||r.status>=300)throw new Error(r.data?.error_text||r.data?.error||`Pair request HTTP ${r.status}`);if(!r.data?.auth_key||r.data.timestamp===undefined)throw new Error('TV gaf geen pairing credentials terug.');sessions.set(id,{deviceId,authKey:r.data.auth_key,timestamp:r.data.timestamp,timeout:Number(r.data.timeout||60),createdAt:Date.now()});return {ok:true,pinRequired:true,timeout:Number(r.data.timeout||60),message:'PIN staat nu op de TV.'}}
-async function grantPair(id,pin){
-  const d=device(id),s=sessions.get(id);
-  if(!s)throw new Error('Geen actieve Remote PIN-sessie. Klik opnieuw op Remote activeren.');
-  if(Date.now()-s.createdAt>Math.max(90000,s.timeout*1000+20000)){sessions.delete(id);throw new Error('De PIN-sessie is verlopen. Klik opnieuw op Remote activeren.')}
-  const code=String(pin||'').trim();if(!/^\d{4,8}$/.test(code))throw new Error('Vul de PIN van de TV in.');
-  const creds={username:s.deviceId,password:s.authKey},url=`https://${d.ip}:1926/6/pair/grant`,body={auth:{auth_AppId:'1',pin:code,auth_timestamp:s.timestamp,auth_signature:pairingSignature(s.timestamp,code)},device:pairDevice(s.deviceId)};
-  const r=await requestWithDigest(url,{method:'POST',body,creds,timeoutMs:9000});
-  if(r.status<200||r.status>=300)throw new Error(r.data?.error_text||r.data?.error||r.data?.message||`Pair grant HTTP ${r.status}`);
-  if(r.data?.error_id&&r.data.error_id!=='SUCCESS')throw new Error(r.data.error_text||r.data.error_id);
-  saveCredentials(id,creds);sessions.delete(id);
-  const fresh=device(id);
-  const test=await requestWithDigest(`https://${fresh.ip}:1926/6/input/key`,{method:'POST',body:{key:'Home'},creds,timeoutMs:8500});
-  if(test.status>=200&&test.status<300)return {ok:true,paired:true,tested:true,message:'Remote secure verbinding opgeslagen en getest.'};
-  return {ok:true,paired:true,tested:false,message:`Remote gekoppeld. Test-key gaf HTTP ${test.status}.`}
-}
-
+async function requestWithDigest(url,{method='GET',body,creds,timeoutMs=8500}={}){let first=await httpsResponse(url,{method,body,timeoutMs});if(first.status>=200&&first.status<300)return first;const challenge=challengeHeader(first);if(first.status!==401||!challenge)return first;let auth=digestAuth(url,method,creds,challenge),second=await httpsResponse(url,{method,body,headers:{Authorization:auth},timeoutMs});if(second.status===401&&challengeHeader(second)){auth=digestAuth(url,method,creds,challengeHeader(second));second=await httpsResponse(url,{method,body,headers:{Authorization:auth},timeoutMs})}return second}
+async function secureJson(d,endpoint,{method='GET',body}={}){if(!d.credentials)throw Object.assign(new Error('Remote is nog niet veilig gekoppeld.'),{status:409});const url=`https://${d.ip}:1926/6/${String(endpoint).replace(/^\//,'')}`,r=await requestWithDigest(url,{method,body,creds:d.credentials,timeoutMs:8500});if(r.status<200||r.status>=300)throw Object.assign(new Error(r.data?.error_text||r.data?.error||r.data?.message||`Secure TV HTTP ${r.status}`),{status:r.status});return r.data}
+async function beginPair(id){const d=device(id);if(d.credentials)return {ok:true,alreadyPaired:true,paired:true,pinRequired:false,message:'Remote was al gekoppeld; opgeslagen beveiligde gegevens zijn hergebruikt.'};const rid=d.id,old=sessions.get(rid);if(old&&Date.now()-old.createdAt<Math.max(90000,old.timeout*1000+20000))return {ok:true,pinRequired:true,reused:true,timeout:old.timeout,message:'Er staat al een actieve PIN op de TV.'};const deviceId=randomId(),body={scope:['read','write','control'],device:pairDevice(deviceId)},r=await httpsResponse(`https://${d.ip}:1926/6/pair/request`,{method:'POST',body,timeoutMs:8000});if(r.status<200||r.status>=300)throw new Error(r.data?.error_text||r.data?.error||`Pair request HTTP ${r.status}`);if(!r.data?.auth_key||r.data.timestamp===undefined)throw new Error('TV gaf geen pairing credentials terug.');sessions.set(rid,{deviceId,authKey:r.data.auth_key,timestamp:r.data.timestamp,timeout:Number(r.data.timeout||60),createdAt:Date.now()});return {ok:true,pinRequired:true,timeout:Number(r.data.timeout||60),message:'PIN staat nu op de TV.'}}
+async function grantPair(id,pin){const d=device(id),rid=d.id,s=sessions.get(rid);if(d.credentials)return {ok:true,paired:true,alreadyPaired:true,message:'Remote was al gekoppeld.'};if(!s)throw new Error('Geen actieve Remote PIN-sessie. Klik opnieuw op Remote activeren.');if(Date.now()-s.createdAt>Math.max(90000,s.timeout*1000+20000)){sessions.delete(rid);throw new Error('De PIN-sessie is verlopen. Klik opnieuw op Remote activeren.')}const code=String(pin||'').trim();if(!/^\d{4,8}$/.test(code))throw new Error('Vul de PIN van de TV in.');const creds={username:s.deviceId,password:s.authKey},url=`https://${d.ip}:1926/6/pair/grant`,body={auth:{auth_AppId:'1',pin:code,auth_timestamp:s.timestamp,auth_signature:pairingSignature(s.timestamp,code)},device:pairDevice(s.deviceId)},r=await requestWithDigest(url,{method:'POST',body,creds,timeoutMs:9000});if(r.status<200||r.status>=300)throw new Error(r.data?.error_text||r.data?.error||r.data?.message||`Pair grant HTTP ${r.status}`);if(r.data?.error_id&&r.data.error_id!=='SUCCESS')throw new Error(r.data.error_text||r.data.error_id);saveCredentials(rid,creds);sessions.delete(rid);return {ok:true,paired:true,message:'Remote secure verbinding opgeslagen. Deze PIN hoef je niet opnieuw in te voeren.'}}
+async function switchHdmi1(d){const body={intent:{extras:{query:'HDMI 1'},action:'Intent {  act=android.intent.action.ASSIST cmp=com.google.android.katniss/com.google.android.apps.tvsearch.app.launch.trampoline.SearchActivityTrampoline flg=0x10200000 }',component:{packageName:'com.google.android.katniss',className:'com.google.android.apps.tvsearch.app.launch.trampoline.SearchActivityTrampoline'}}};try{await secureJson(d,'activities/launch',{method:'POST',body});return {ok:true,source:'HDMI 1',method:'assistant'}}catch(e){throw Object.assign(new Error(`HDMI 1 omschakelen is door deze firmware geweigerd: ${e.message}`),{status:e.status||400})}}
 function jsonError(res,e){res.status(e.status&&e.status>=400?e.status:400).json({error:e.message,code:e.code||'remote_error'})}
 const previousListen=express.application.listen;
-express.application.listen=function(...args){
-  if(!this.__secureRemoteRoutes){this.__secureRemoteRoutes=true;
-    this.post('/api/remote/status',async(req,res)=>{try{const d=device(req.body?.deviceId);res.json({ok:true,paired:!!d.credentials,secureRemote:!!d.credentials,ip:d.ip})}catch(e){jsonError(res,e)}});
-    this.post('/api/remote/pair/request',async(req,res)=>{try{res.json(await beginPair(req.body?.deviceId))}catch(e){jsonError(res,e)}});
-    this.post('/api/remote/pair/grant',async(req,res)=>{try{res.json(await grantPair(req.body?.deviceId,req.body?.pin))}catch(e){jsonError(res,e)}});
-    this.post('/api/remote/key',async(req,res)=>{try{const d=device(req.body?.deviceId),key=KEY_ALIASES[req.body?.key]||req.body?.key;if(!key)throw new Error('Geen remote key opgegeven.');await secureJson(d,'input/key',{method:'POST',body:{key}});res.json({ok:true,key})}catch(e){jsonError(res,e)}});
-    this.post('/api/remote/volume',async(req,res)=>{try{const d=device(req.body?.deviceId),cur=await secureJson(d,'audio/volume'),max=Number(cur.max||60),value=Math.max(0,Math.min(max,Number(req.body?.volume)||0));await secureJson(d,'audio/volume',{method:'POST',body:{muted:false,current:value}});res.json({ok:true,current:value,max})}catch(e){jsonError(res,e)}});
-    this.post('/api/remote/mute',async(req,res)=>{try{const d=device(req.body?.deviceId),cur=await secureJson(d,'audio/volume'),muted=req.body?.muted===undefined?!cur.muted:!!req.body.muted;await secureJson(d,'audio/volume',{method:'POST',body:{muted,current:Number(cur.current||0)}});res.json({ok:true,muted,current:Number(cur.current||0)})}catch(e){jsonError(res,e)}});
-  }
-  return previousListen.apply(this,args)
-};
-console.log('[REMOTE] Secure Philips remote pairing layer v1.1 preloaded');
+express.application.listen=function(...args){if(!this.__secureRemoteRoutes){this.__secureRemoteRoutes=true;
+  this.post('/api/remote/status',async(req,res)=>{try{const d=device(req.body?.deviceId);res.json({ok:true,paired:!!d.credentials,secureRemote:!!d.credentials,remembered:!!d.credentials,deviceId:d.id,ip:d.ip})}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/pair/request',async(req,res)=>{try{res.json(await beginPair(req.body?.deviceId))}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/pair/grant',async(req,res)=>{try{res.json(await grantPair(req.body?.deviceId,req.body?.pin))}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/key',async(req,res)=>{try{const d=device(req.body?.deviceId),key=KEY_ALIASES[req.body?.key]||req.body?.key;if(!key)throw new Error('Geen remote key opgegeven.');await secureJson(d,'input/key',{method:'POST',body:{key}});res.json({ok:true,key})}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/hdmi1',async(req,res)=>{try{res.json(await switchHdmi1(device(req.body?.deviceId)))}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/volume',async(req,res)=>{try{const d=device(req.body?.deviceId),cur=await secureJson(d,'audio/volume'),max=Number(cur.max||60),value=Math.max(0,Math.min(max,Number(req.body?.volume)||0));await secureJson(d,'audio/volume',{method:'POST',body:{muted:false,current:value}});res.json({ok:true,current:value,max})}catch(e){jsonError(res,e)}});
+  this.post('/api/remote/mute',async(req,res)=>{try{const d=device(req.body?.deviceId),cur=await secureJson(d,'audio/volume'),muted=req.body?.muted===undefined?!cur.muted:!!req.body.muted;await secureJson(d,'audio/volume',{method:'POST',body:{muted,current:Number(cur.current||0)}});res.json({ok:true,muted,current:Number(cur.current||0)})}catch(e){jsonError(res,e)}});
+}return previousListen.apply(this,args)};
+console.log('[REMOTE] Secure Philips remote pairing layer v1.2 preloaded');
