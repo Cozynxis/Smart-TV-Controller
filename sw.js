@@ -1,4 +1,4 @@
-const CACHE='smart-tv-controller-v7';
+const CACHE='smart-tv-controller-v8';
 const ASSETS=['./','./index.html','./css/style.css','./css/enhancements.css','./js/app.js','./js/enhancements.js','./manifest.json'];
 self.addEventListener('install',e=>{self.skipWaiting();e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)))});
 self.addEventListener('activate',e=>e.waitUntil(Promise.all([self.clients.claim(),caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k))))])));
