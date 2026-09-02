@@ -1,0 +1,4 @@
+bridge/node_modules/
+bridge/devices.local.json
+.DS_Store
+*.log
