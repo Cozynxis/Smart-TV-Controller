@@ -4,38 +4,87 @@ const express=require('express');
 
 const STORE=path.join(__dirname,'devices.local.json');
 const sessions=new Map();
+const originalUse=express.application.use;
+const originalPost=express.application.post;
+const originalGet=express.application.get;
 
 function readStore(){try{return JSON.parse(fs.readFileSync(STORE,'utf8'))}catch{return {devices:{}}}}
 function getDevice(id){const d=readStore().devices?.[id];if(!d)throw Object.assign(new Error('Unknown saved TV'),{status:404});return d}
 function cleanEndpoint(e){return String(e||'').replace(/^\/+|\/+$/g,'')}
-async function requestTv(d,endpoint,{method='GET',body}={}){
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function rgb(value){if(value&&typeof value==='object'&&Number.isFinite(value.r))return {r:clamp(Math.round(value.r),0,255),g:clamp(Math.round(value.g),0,255),b:clamp(Math.round(value.b),0,255)};const s=String(value||'#000000').replace('#','').padEnd(6,'0').slice(0,6);return {r:parseInt(s.slice(0,2),16)||0,g:parseInt(s.slice(2,4),16)||0,b:parseInt(s.slice(4,6),16)||0}}
+function mix(a,b,t){a=rgb(a);b=rgb(b);return {r:Math.round(a.r+(b.r-a.r)*t),g:Math.round(a.g+(b.g-a.g)*t),b:Math.round(a.b+(b.b-a.b)*t)}}
+function ease(t,type){t=clamp(t,0,1);if(type==='linear')return t;if(type==='ease-in')return t*t;if(type==='ease-out')return 1-(1-t)*(1-t);return t*t*(3-2*t)}
+
+async function requestTv(d,endpoint,{method='GET',body,timeout=3500}={}){
   const ep=cleanEndpoint(endpoint),preferred=Number(d.apiVersion||6),versions=[preferred,...[6,1].filter(v=>v!==preferred)],urls=[...new Set([...versions.map(v=>`http://${d.ip}:1925/${v}/${ep}`),`http://${d.ip}:1925/${ep}`])];
   let last;
-  for(const url of urls){try{const r=await fetch(url,{method,headers:{Accept:'application/json','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(3500)});const text=await r.text();if(r.ok)return text?JSON.parse(text):{};if(r.status===404){last=new Error(`HTTP 404 at ${new URL(url).pathname}`);continue}throw new Error(`TV HTTP ${r.status}${text?`: ${text.slice(0,120)}`:''}`)}catch(e){last=e;if(/404/.test(e.message))continue;throw e}}throw last||new Error(`No working route for ${ep}`)
+  for(const url of urls){
+    try{
+      const r=await fetch(url,{method,headers:{Accept:'application/json','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(timeout)});
+      const text=await r.text();
+      if(r.ok)return text?JSON.parse(text):{};
+      if(r.status===404){last=new Error(`HTTP 404 at ${new URL(url).pathname}`);continue}
+      throw Object.assign(new Error(`TV HTTP ${r.status}${text?`: ${text.slice(0,120)}`:''}`),{status:r.status});
+    }catch(e){last=e;if(e.status===404||/HTTP 404/.test(e.message))continue;throw e}
+  }
+  throw last||new Error(`No working route for ${ep}`)
 }
-function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
-function rgb(hex){const s=String(hex||'#000000').replace('#','');return {r:parseInt(s.slice(0,2),16)||0,g:parseInt(s.slice(2,4),16)||0,b:parseInt(s.slice(4,6),16)||0}}
-function mix(a,b,t){return {r:Math.round(a.r+(b.r-a.r)*t),g:Math.round(a.g+(b.g-a.g)*t),b:Math.round(a.b+(b.b-a.b)*t)}}
-function ease(t,type){t=clamp(t,0,1);if(type==='linear')return t;if(type==='ease-in')return t*t;if(type==='ease-out')return 1-(1-t)*(1-t);return t*t*(3-2*t)}
-function normalizeAnimation(a){if(!a||!Array.isArray(a.frames)||a.frames.length<2)throw new Error('Animation needs at least 2 keyframes');const duration=clamp(Number(a.duration)||6,.2,300),fps=clamp(Math.round(Number(a.fps)||12),4,30);const frames=a.frames.map(f=>({time:clamp(Number(f.time)||0,0,duration),pixels:f.pixels&&typeof f.pixels==='object'?f.pixels:{}})).sort((x,y)=>x.time-y.time);return {...a,duration,fps,frames,easing:['linear','ease-in','ease-out','smoothstep'].includes(a.easing)?a.easing:'smoothstep',loop:a.loop!==false,pingpong:!!a.pingpong}}
-function sample(anim,t,ledIds){const fs=anim.frames;if(t<=fs[0].time)return fs[0].pixels;if(t>=fs[fs.length-1].time)return fs[fs.length-1].pixels;let a=fs[0],b=fs[1];for(let i=0;i<fs.length-1;i++){if(t>=fs[i].time&&t<=fs[i+1].time){a=fs[i];b=fs[i+1];break}}const k=ease((t-a.time)/Math.max(.001,b.time-a.time),anim.easing),out={};for(const id of ledIds)out[id]=mix(rgb(a.pixels[id]),rgb(b.pixels[id]),k);return out}
+
+function normalizeAnimation(a){
+  if(!a||!Array.isArray(a.frames)||a.frames.length<2)throw new Error('Maak minimaal 2 stappen voordat je afspeelt.');
+  const duration=clamp(Number(a.duration)||5,.2,300),fps=clamp(Math.round(Number(a.fps)||12),4,25);
+  const frames=a.frames.map(f=>({time:clamp(Number(f.time)||0,0,duration),pixels:f.pixels&&typeof f.pixels==='object'?f.pixels:{}})).sort((x,y)=>x.time-y.time);
+  if(frames[0].time!==0)frames.unshift({time:0,pixels:{...frames[0].pixels}});
+  if(frames.at(-1).time<duration)frames.push({time:duration,pixels:{...frames.at(-1).pixels}});
+  return {...a,duration,fps,frames,easing:['linear','ease-in','ease-out','smoothstep'].includes(a.easing)?a.easing:'smoothstep',loop:a.loop!==false,pingpong:!!a.pingpong}
+}
 function topologyIds(t){const ids=[];for(const side of ['left','top','right'])for(let i=0;i<Number(t[side]||0);i++)ids.push(`${side}:${i}`);return ids}
-function layerFromPixels(t,p){const layer1={};for(const side of ['left','top','right']){const n=Number(t[side]||0);if(!n)continue;const out={};for(let i=0;i<n;i++)out[String(i)]=p[`${side}:${i}`]||{r:0,g:0,b:0};layer1[side]=out}if(Number(t.bottom||0)>0){const o={};for(let i=0;i<Number(t.bottom);i++)o[String(i)]={r:0,g:0,b:0};layer1.bottom=o}return {layer1}}
-function stop(id){const s=sessions.get(id);if(s){s.running=false;if(s.timer)clearTimeout(s.timer);sessions.delete(id)}return {ok:true,running:false}}
-async function start(deviceId,animation){stop(deviceId);const d=getDevice(deviceId),anim=normalizeAnimation(animation);const topology=await requestTv(d,'ambilight/topology');if(!topology.left&&!topology.top&&!topology.right)throw new Error('TV reports no editable Ambilight topology');await requestTv(d,'ambilight/power',{method:'POST',body:{power:'On'}}).catch(()=>{});await requestTv(d,'ambilight/mode',{method:'POST',body:{current:'manual'}});const ids=topologyIds(topology),session={running:true,deviceId,animation:anim,topology,started:Date.now(),frames:0,lastError:null,timer:null,direction:1};sessions.set(deviceId,session);
-  const frameMs=Math.max(33,Math.round(1000/anim.fps));
-  const loop=async()=>{if(!session.running)return;const now=Date.now(),elapsed=(now-session.started)/1000;let t=elapsed;if(anim.pingpong){const cycle=anim.duration*2,t2=elapsed%cycle;t=t2<=anim.duration?t2:cycle-t2}else if(anim.loop)t=elapsed%anim.duration;else if(t>anim.duration){stop(deviceId);return}const pixels=sample(anim,t,ids),started=Date.now();try{await requestTv(d,'ambilight/cached',{method:'POST',body:layerFromPixels(topology,pixels)});session.frames++;session.lastError=null}catch(e){session.lastError=e.message;session.running=false;sessions.delete(deviceId);return}session.timer=setTimeout(loop,Math.max(5,frameMs-(Date.now()-started)))};
-  loop();return {ok:true,running:true,title:anim.title||'Custom animation',emoji:anim.emoji||'✨',duration:anim.duration,fps:anim.fps,topology}
+function sample(anim,t,ids){
+  const fs=anim.frames;
+  let a=fs[0],b=fs[fs.length-1];
+  if(t<=fs[0].time){a=b=fs[0]}else if(t>=fs.at(-1).time){a=b=fs.at(-1)}else{for(let i=0;i<fs.length-1;i++){if(t>=fs[i].time&&t<=fs[i+1].time){a=fs[i];b=fs[i+1];break}}}
+  const k=a===b?0:ease((t-a.time)/Math.max(.001,b.time-a.time),anim.easing),out={};
+  for(const id of ids)out[id]=a===b?rgb(a.pixels[id]):mix(a.pixels[id],b.pixels[id],k);
+  return out
+}
+function layerFromPixels(t,p){const layer1={};for(const side of ['left','top','right']){const n=Number(t[side]||0);if(!n)continue;const out={};for(let i=0;i<n;i++)out[String(i)]=rgb(p[`${side}:${i}`]);layer1[side]=out}if(Number(t.bottom||0)>0){const o={};for(let i=0;i<Number(t.bottom);i++)o[String(i)]={r:0,g:0,b:0};layer1.bottom=o}return {layer1}}
+function stop(id){const s=sessions.get(id);if(s){s.running=false;if(s.timer)clearTimeout(s.timer);sessions.delete(id);console.log(`[AMBI CUSTOM] stopped ${id}`)}return {ok:true,running:false}}
+
+async function start(deviceId,rawAnimation){
+  stop(deviceId);
+  const d=getDevice(deviceId),anim=normalizeAnimation(rawAnimation),topology=await requestTv(d,'ambilight/topology');
+  if(!topology.left&&!topology.top&&!topology.right)throw new Error('Deze TV meldt geen bewerkbare Ambilight LEDs.');
+  await requestTv(d,'ambilight/power',{method:'POST',body:{power:'On'}}).catch(()=>{});
+  await requestTv(d,'ambilight/mode',{method:'POST',body:{current:'manual'}});
+  const ids=topologyIds(topology),session={running:true,deviceId,animation:anim,topology,started:Date.now(),frames:0,lastError:null,timer:null};
+  sessions.set(deviceId,session);
+  const frameMs=Math.max(40,Math.round(1000/anim.fps));
+  const loop=async()=>{
+    if(!session.running)return;
+    const elapsed=(Date.now()-session.started)/1000;
+    let t=elapsed;
+    if(anim.pingpong){const cycle=anim.duration*2,part=elapsed%cycle;t=part<=anim.duration?part:cycle-part}
+    else if(anim.loop)t=elapsed%anim.duration;
+    else if(t>anim.duration){stop(deviceId);return}
+    const started=Date.now();
+    try{await requestTv(d,'ambilight/cached',{method:'POST',body:layerFromPixels(topology,sample(anim,t,ids)),timeout:2500});session.frames++;session.lastError=null}
+    catch(e){session.lastError=e.message;session.running=false;sessions.delete(deviceId);console.error(`[AMBI CUSTOM] ${e.message}`);return}
+    session.timer=setTimeout(loop,Math.max(5,frameMs-(Date.now()-started)))
+  };
+  loop();
+  console.log(`[AMBI CUSTOM] ${anim.emoji||'✨'} ${anim.title||'Custom'} started • ${anim.frames.length} keyframes • ${anim.fps} FPS`);
+  return {ok:true,running:true,title:anim.title||'Custom animation',emoji:anim.emoji||'✨',duration:anim.duration,fps:anim.fps,topology}
 }
 function status(id){const s=sessions.get(id);return s?{running:s.running,title:s.animation.title,emoji:s.animation.emoji,frames:s.frames,fps:s.animation.fps,duration:s.animation.duration,lastError:s.lastError}:{running:false}}
 
-const originalListen=express.application.listen;
-express.application.listen=function(...args){
-  if(!this.__customAnimationsInstalled){this.__customAnimationsInstalled=true;
-    this.post('/api/ambilight/custom/start',async(req,res)=>{try{const {deviceId,animation}=req.body||{};if(!deviceId)throw new Error('Missing deviceId');try{await fetch('http://127.0.0.1:8765/api/ambilight/animation/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId}),signal:AbortSignal.timeout(1200)})}catch{}res.json(await start(deviceId,animation))}catch(e){res.status(e.status||400).json({error:e.message,code:'custom_animation_error'})}});
-    this.post('/api/ambilight/custom/stop',(req,res)=>{try{res.json(stop(req.body?.deviceId))}catch(e){res.status(400).json({error:e.message})}});
-    this.get('/api/ambilight/custom/status',(req,res)=>{try{res.json(status(req.query?.deviceId))}catch(e){res.status(400).json({error:e.message})}});
-  }
-  return originalListen.apply(this,args)
-};
-console.log('[AMBI] Custom timeline animation engine preloaded');
+function install(app){
+  if(app.__customAnimationsInstalled)return;
+  app.__customAnimationsInstalled=true;
+  originalPost.call(app,'/api/ambilight/custom/start',async(req,res)=>{try{const {deviceId,animation}=req.body||{};if(!deviceId)throw new Error('Missing deviceId');res.json(await start(deviceId,animation))}catch(e){res.status(e.status||400).json({error:e.message,code:'custom_animation_error'})}});
+  originalPost.call(app,'/api/ambilight/custom/stop',(req,res)=>{try{res.json(stop(req.body?.deviceId))}catch(e){res.status(400).json({error:e.message})}});
+  originalGet.call(app,'/api/ambilight/custom/status',(req,res)=>{try{res.json(status(req.query?.deviceId))}catch(e){res.status(400).json({error:e.message})}});
+  console.log('[AMBI] Custom timeline routes installed');
+}
+express.application.use=function(...args){install(this);return originalUse.apply(this,args)};
+console.log('[AMBI] Custom timeline animation engine ready');
