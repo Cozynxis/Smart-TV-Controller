@@ -13,12 +13,12 @@ express.static=function(root,options){
           .replace(/<link[^>]+animation-creator\.css[^>]*>\s*/g,'')
           .replace(/<script[^>]+animation-creator\.js[^>]*><\/script>\s*/g,'')
           .replace(/<script[^>]+remote-secure\.js[^>]*><\/script>\s*/g,'');
-        html=html.replace('</head>','  <link rel="stylesheet" href="css/animation-creator.css?v=4" />\n  <style>.secure-remote-card{margin-bottom:16px}.secure-remote-setup,.secure-pin-box{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.secure-remote-explain{display:flex;flex-direction:column;gap:4px;flex:1;min-width:240px}.secure-remote-explain span{color:var(--muted)}.secure-pin-box{margin-top:12px}.secure-pin-box label{margin:0;min-width:180px}.secure-pin-box input{font-size:20px;letter-spacing:.18em;font-weight:800}.secure-remote-card .notice{margin-top:12px;margin-bottom:0}</style>\n</head>');
-        html=html.replace('</body>','<script src="js/animation-creator.js?v=4"></script>\n<script src="js/remote-secure.js?v=1"></script>\n</body>');
+        html=html.replace('</head>','  <link rel="stylesheet" href="css/animation-creator.css?v=5" />\n  <style>.secure-remote-card{margin-bottom:16px}.secure-remote-setup,.secure-pin-box{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.secure-remote-explain{display:flex;flex-direction:column;gap:4px;flex:1;min-width:240px}.secure-remote-explain span{color:var(--muted)}.secure-pin-box{margin-top:12px}.secure-pin-box label{margin:0;min-width:180px}.secure-pin-box input{font-size:20px;letter-spacing:.18em;font-weight:800}.secure-remote-card .notice{margin-top:12px;margin-bottom:0}</style>\n</head>');
+        html=html.replace('</body>','<script src="js/animation-creator.js?v=5"></script>\n<script src="js/remote-secure.js?v=2"></script>\n</body>');
         res.type('html');res.set('Cache-Control','no-store, no-cache, must-revalidate');res.set('Pragma','no-cache');res.send(html);return;
       }catch(e){console.error('[DASHBOARD] asset injection failed:',e.message)}
     }
     mw(req,res,next)
   }
 };
-console.log('[UI] Animation Maker v4 + Secure Remote UI enabled');
+console.log('[UI] Animation Maker v5 + Secure Remote UI v2 enabled');
