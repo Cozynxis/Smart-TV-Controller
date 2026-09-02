@@ -1,141 +1,31 @@
 (() => {
-  const effects = {
-    rainbow: { name: 'Rainbow', icon: '🌈', desc: 'Smoothly cycles every Ambilight side through the full colour spectrum.' },
-    aurora: { name: 'Aurora', icon: '✦', desc: 'Slow blue, cyan and violet movement inspired by northern lights.' },
-    ocean: { name: 'Ocean', icon: '≈', desc: 'A calm deep-blue to turquoise flowing animation.' },
-    sunset: { name: 'Sunset Flow', icon: '◒', desc: 'Warm amber, orange, pink and purple tones that drift slowly.' },
-    breathe: { name: 'Breathe', icon: '◌', desc: 'A soft colour that gently brightens and dims without harsh flashing.' },
-    neon: { name: 'Neon Dream', icon: '◇', desc: 'Smooth magenta, violet and electric-blue transitions.' }
+  const effects={
+    rainbow:{name:'Rainbow',icon:'🌈',desc:'A moving rainbow across left, top and right at the same time.'},
+    aurora:{name:'Aurora',icon:'✦',desc:'Slow cyan, blue and violet movement across the Ambilight LEDs.'},
+    ocean:{name:'Ocean',icon:'≈',desc:'Deep-blue and turquoise waves with gentle brightness changes.'},
+    sunset:{name:'Sunset Flow',icon:'◒',desc:'Warm orange, pink and purple tones flowing around the TV.'},
+    breathe:{name:'Breathe',icon:'◌',desc:'All sides breathe smoothly in a calm violet tone.'},
+    neon:{name:'Neon Dream',icon:'◇',desc:'Magenta, violet and electric-blue movement.'}
   };
-
-  const anim = { running:false, effect:null, timer:null, step:0, busy:false };
-  let injected = false;
-
-  function el(s){ return document.querySelector(s); }
-  function els(s){ return [...document.querySelectorAll(s)]; }
-  function clamp(v,min,max){ return Math.max(min,Math.min(max,v)); }
-  function hsvToHex(h,s,v){
-    h=((h%360)+360)%360;s=clamp(s,0,100)/100;v=clamp(v,0,100)/100;
-    const c=v*s,x=c*(1-Math.abs((h/60)%2-1)),m=v-c;let r=0,g=0,b=0;
-    if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x}
-    return '#'+[r,g,b].map(n=>Math.round((n+m)*255).toString(16).padStart(2,'0')).join('');
-  }
-  function wave(a,b,t){ return a+(b-a)*(0.5-0.5*Math.cos(t*Math.PI*2)); }
-  function colourFor(effect,step){
-    const t=step/100;
-    if(effect==='rainbow') return hsvToHex((step*3.2)%360,94,100);
-    if(effect==='aurora') return hsvToHex(wave(165,285,t*.35),82,wave(58,96,t*.62));
-    if(effect==='ocean') return hsvToHex(wave(185,228,t*.28),88,wave(55,94,t*.48));
-    if(effect==='sunset') return hsvToHex(wave(8,328,t*.18),82,wave(68,100,t*.36));
-    if(effect==='breathe') return hsvToHex(268,72,wave(26,100,t*.22));
-    if(effect==='neon') return hsvToHex(wave(278,325,t*.42),92,wave(62,100,t*.58));
-    return '#7c5cff';
-  }
-  function speedDelay(){
-    const n=Number(el('#ambiAnimSpeed')?.value||58);
-    return Math.round(720-(clamp(n,1,100)*5.9));
-  }
-  function updateAnimUi(){
-    const badge=el('#ambiAnimStatus');
-    if(badge){badge.textContent=anim.running?`${effects[anim.effect]?.name||'Effect'} running`:'Stopped';badge.className=`effect-status ${anim.running?'running':''}`;}
-    els('[data-effect]').forEach(b=>b.classList.toggle('active',anim.running&&b.dataset.effect===anim.effect));
-    const stop=el('#stopAmbiAnim');if(stop)stop.disabled=!anim.running;
-  }
-  function stopAnimation(showToast=true){
-    anim.running=false;anim.effect=null;anim.busy=false;clearTimeout(anim.timer);anim.timer=null;updateAnimUi();
-    if(showToast && typeof toast==='function') toast('Ambilight animation stopped');
-  }
-  async function tick(){
-    if(!anim.running || !state?.current || anim.busy) return;
-    anim.busy=true;
-    const colour=colourFor(anim.effect,anim.step++);
-    const swatch=el('#ambiAnimPreview');if(swatch)swatch.style.background=colour;
-    const txt=el('#ambiAnimColour');if(txt)txt.textContent=colour.toUpperCase();
-    if(el('#ambiColor')) el('#ambiColor').value=colour;
-    if(el('#zoneColor')) el('#zoneColor').value=colour;
-    try{
-      await api('/api/ambilight',{method:'POST',body:JSON.stringify({deviceId:state.current.id,mode:'FOLLOW_COLOR',preset:'CUSTOM_COLOR',color:colour})});
-      const hint=el('#zoneModeHint');if(hint)hint.textContent=`Animation: ${effects[anim.effect]?.name||anim.effect} • all sides on`;
-    }catch(e){
-      stopAnimation(false);
-      if(typeof toast==='function') toast(`Animation stopped: ${typeof controlError==='function'?controlError(e):e.message}`);
-      return;
-    }finally{ anim.busy=false; }
-    if(anim.running) anim.timer=setTimeout(tick,speedDelay());
-  }
-  async function startAnimation(effect){
-    if(!state?.current){ if(typeof toast==='function') toast('Connect a TV first'); return; }
-    stopAnimation(false);
-    if(state.zones){state.zones.left=true;state.zones.top=true;state.zones.right=true;if(typeof renderZones==='function')renderZones();}
-    anim.running=true;anim.effect=effect;anim.step=0;updateAnimUi();
-    if(typeof toast==='function') toast(`${effects[effect].name} started • left + top + right enabled`);
-    await tick();
-  }
-
-  function modeHelp(mode){
-    const map={
-      FOLLOW_VIDEO:['Follow video','Ambilight follows the colours and movement of the picture. Choose a video preset underneath.'],
-      FOLLOW_AUDIO:['Follow audio','Ambilight reacts to sound. The preset controls the visual algorithm; tuning adjusts its variation.'],
-      FOLLOW_COLOR:['Follow colour','Use a Philips colour preset or Custom Color. For individual sides use Custom Zones on the right.'],
-      FLAG:['Flag','Displays a built-in flag palette when your firmware supports that preset.'],
-      OFF:['Off','Turns Ambilight off. Any running animation is stopped first.']
-    };
-    return map[mode]||['Ambilight mode','Choose a mode and press Apply.'];
-  }
-  function refreshModeHelp(){
-    const box=el('#ambiModeHelp');if(!box)return;const [title,text]=modeHelp(el('#ambiMode')?.value);box.innerHTML=`<b>${title}</b><span>${text}</span>`;
-  }
-  function inject(){
-    if(injected)return;injected=true;
-    const ambi=el('#view-ambilight');if(!ambi)return;
-    const grid=ambi.querySelector('.grid.two');
-    if(grid){
-      const guide=document.createElement('div');guide.className='ambi-guide card';guide.innerHTML=`<div class="card-head"><div><h3>How Ambilight control works</h3><p>Pick a normal TV mode, create custom left/top/right zones, or run one smooth animation. Starting one type automatically stops the previous animation.</p></div><span class="badge protected">No re-pairing</span></div><div id="ambiModeHelp" class="mode-help"></div>`;
-      grid.before(guide);
-    }
-    const card=document.createElement('div');card.className='card animation-card';card.innerHTML=`
-      <div class="card-head"><div><h3>Ambilight Animations</h3><p>Smooth bridge-driven colour effects. No flashing/strobe effects are included.</p></div><span id="ambiAnimStatus" class="effect-status">Stopped</span></div>
-      <div class="animation-layout">
-        <div class="effect-grid">${Object.entries(effects).map(([id,x])=>`<button class="effect-tile" data-effect="${id}"><span>${x.icon}</span><b>${x.name}</b><small>${x.desc}</small></button>`).join('')}</div>
-        <div class="animation-panel">
-          <div class="anim-preview-wrap"><div id="ambiAnimPreview" class="anim-preview"></div><div><small>Live target colour</small><b id="ambiAnimColour">#7C5CFF</b></div></div>
-          <label>Animation speed <span id="ambiAnimSpeedValue">58%</span><input id="ambiAnimSpeed" type="range" min="1" max="100" value="58"></label>
-          <div class="animation-note"><b>Smooth mode</b><span>The next frame is only sent after the TV accepts the previous one, so requests never stack up.</span></div>
-          <button id="stopAmbiAnim" class="btn danger-fill wide" disabled>Stop animation</button>
-        </div>
-      </div>`;
-    ambi.append(card);
-    els('[data-effect]').forEach(b=>b.addEventListener('click',()=>startAnimation(b.dataset.effect)));
-    el('#stopAmbiAnim')?.addEventListener('click',()=>stopAnimation());
-    el('#ambiAnimSpeed')?.addEventListener('input',e=>{const x=el('#ambiAnimSpeedValue');if(x)x.textContent=`${e.target.value}%`;});
-    el('#ambiMode')?.addEventListener('change',refreshModeHelp);
-    refreshModeHelp();updateAnimUi();
-  }
-
-  const originalApplyAmbilight = typeof applyAmbilight==='function' ? applyAmbilight : null;
-  if(originalApplyAmbilight){
-    applyAmbilight = async function(...args){ stopAnimation(false); return originalApplyAmbilight(...args); };
-  }
-  const originalApplyZones = typeof applyZones==='function' ? applyZones : null;
-  if(originalApplyZones){
-    applyZones = async function(...args){ stopAnimation(false); return originalApplyZones(...args); };
-  }
-  const originalRemoteNotice = typeof updateRemoteNotice==='function' ? updateRemoteNotice : null;
-  if(originalRemoteNotice){
-    updateRemoteNotice = function(error){
-      originalRemoteNotice(error);
-      const n=el('#remoteNotice');if(!n)return;
-      if(n.classList.contains('warning')) n.textContent='Remote keys are not available through the current TV connection. Your TV stays connected and Ambilight, status and other available features keep working. No PIN request is started automatically.';
-    };
-  }
-  const originalLoadApps = typeof loadApps==='function' ? loadApps : null;
-  if(originalLoadApps){
-    loadApps = async function(...args){
-      await originalLoadApps(...args);
-      const s=el('#appsStatus');if(s?.classList.contains('warning')) s.textContent='Installed app discovery is not available through this TV firmware connection. The TV is still connected; use the Android TV page to see which other services are available.';
-    };
-  }
-
-  window.addEventListener('beforeunload',()=>stopAnimation(false));
-  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',inject); else inject();
+  const ui={effect:null,running:false,poll:null,previewTimer:null,previewHue:0};
+  let injected=false;
+  const el=s=>document.querySelector(s),els=s=>[...document.querySelectorAll(s)];
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  function hsv(h,s,v){h=((h%360)+360)%360;s/=100;v/=100;const c=v*s,x=c*(1-Math.abs((h/60)%2-1)),m=v-c;let r=0,g=0,b=0;if(h<60){r=c;g=x}else if(h<120){r=x;g=c}else if(h<180){g=c;b=x}else if(h<240){g=x;b=c}else if(h<300){r=x;b=c}else{r=c;b=x}return '#'+[r,g,b].map(n=>Math.round((n+m)*255).toString(16).padStart(2,'0')).join('')}
+  function speed(){return Number(el('#ambiAnimSpeed')?.value||65)}
+  function setStatus(running,effect,frames){ui.running=running;ui.effect=running?effect:null;const b=el('#ambiAnimStatus');if(b){b.textContent=running?`${effects[effect]?.name||effect} • ${frames||0} frames`:'Stopped';b.className=`effect-status ${running?'running':''}`}els('[data-effect]').forEach(x=>x.classList.toggle('active',running&&x.dataset.effect===effect));if(el('#stopAmbiAnim'))el('#stopAmbiAnim').disabled=!running}
+  function previewStart(){clearInterval(ui.previewTimer);ui.previewTimer=setInterval(()=>{if(!ui.running)return;ui.previewHue=(ui.previewHue+2+speed()/22)%360;const p=el('#ambiAnimPreview');if(p)p.style.background=`linear-gradient(90deg,${hsv(ui.previewHue,95,100)},${hsv(ui.previewHue+110,95,100)},${hsv(ui.previewHue+220,95,100)})`;const t=el('#ambiAnimColour');if(t)t.textContent='Bridge streaming';},45)}
+  async function startAnimation(effect){if(!state?.current)return toast('Connect a TV first');try{const r=await api('/api/ambilight/animation/start',{method:'POST',body:JSON.stringify({deviceId:state.current.id,effect,speed:speed()})});state.zones={left:true,top:true,right:true};if(typeof renderZones==='function')renderZones();setStatus(true,effect,0);previewStart();if(el('#zoneModeHint'))el('#zoneModeHint').textContent=`Animation active: ${effects[effect].name} • left + top + right`;toast(`${effects[effect].name} started on the bridge`);pollStatus()}catch(e){toast(`Animation: ${typeof controlError==='function'?controlError(e):e.message}`)}}
+  async function stopAnimation(show=true){if(!state?.current){setStatus(false);return}try{await api('/api/ambilight/animation/stop',{method:'POST',body:JSON.stringify({deviceId:state.current.id})})}catch{}setStatus(false);clearInterval(ui.previewTimer);if(el('#zoneModeHint'))el('#zoneModeHint').textContent='Custom Zone mode';if(show)toast('Ambilight animation stopped')}
+  async function pollStatus(){clearTimeout(ui.poll);if(!state?.current)return;try{const r=await api(`/api/ambilight/animation/status?deviceId=${encodeURIComponent(state.current.id)}`);setStatus(!!r.running,r.effect,r.frames);if(r.running)ui.poll=setTimeout(pollStatus,850)}catch{}}
+  function modeHelp(mode){const map={FOLLOW_VIDEO:['Follow video','The TV itself follows the picture. Pick a video preset and press Apply mode.'],FOLLOW_AUDIO:['Follow audio','The TV reacts to audio using the selected Philips algorithm.'],FOLLOW_COLOR:['Follow colour','A fixed Philips colour mode. For individual sides, use Custom Zones.'],FLAG:['Flag','Uses a built-in flag palette when your firmware exposes it.'],OFF:['Off','Turns Ambilight off and stops any running animation.']};return map[mode]||['Ambilight mode','Choose a mode and press Apply mode.']}
+  function refreshModeHelp(){const box=el('#ambiModeHelp');if(!box)return;const [a,b]=modeHelp(el('#ambiMode')?.value);box.innerHTML=`<b>${a}</b><span>${b}</span>`}
+  function cleanRemote(){const n=el('#remoteNotice');if(!n)return;if(n.classList.contains('warning')){n.className='notice subtle';n.innerHTML='<b>Remote control unavailable on this connection</b><br><span>This TV keeps the working connection for Ambilight, status and other supported features. Remote buttons are disabled because this firmware does not expose input-key control here.</span>';els('#view-remote [data-key]').forEach(b=>{b.disabled=true;b.title='Input-key control is not available on this TV connection'})}}
+  function cleanApps(){const status=el('#appsStatus'),grid=el('#appsGrid');if(!status||!grid)return;if(status.classList.contains('warning')||/unavailable|not exposed|not available/i.test(status.textContent)){status.className='notice subtle';status.innerHTML='<b>App library not exposed by this TV connection</b><br><span>The controller will keep the TV connected. Android TV information and all other supported pages remain available.</span>';grid.className='apps-grid empty';grid.innerHTML='<div class="empty-feature"><b>No app tiles to display</b><span>Your firmware does not return an installed-app list through this JointSpace connection.</span></div>'}}
+  function inject(){if(injected)return;injected=true;const ambi=el('#view-ambilight');if(!ambi)return;const grid=ambi.querySelector('.grid.two');if(grid){const guide=document.createElement('div');guide.className='ambi-guide card';guide.innerHTML='<div class="card-head"><div><h3>Ambilight control</h3><p>Normal modes are handled by the TV. Custom Zones and Animations use direct LED control. Starting one automatically replaces the previous manual effect.</p></div><span class="badge protected">Bridge v0.7</span></div><div id="ambiModeHelp" class="mode-help"></div>';grid.before(guide)}const card=document.createElement('div');card.className='card animation-card';card.innerHTML=`<div class="card-head"><div><h3>Ambilight Animations</h3><p>Frames are generated inside the local bridge and streamed straight to the TV using the fast cached LED endpoint.</p></div><span id="ambiAnimStatus" class="effect-status">Stopped</span></div><div class="animation-layout"><div class="effect-grid">${Object.entries(effects).map(([id,x])=>`<button class="effect-tile" data-effect="${id}"><span>${x.icon}</span><b>${x.name}</b><small>${x.desc}</small></button>`).join('')}</div><div class="animation-panel"><div class="anim-preview-wrap"><div id="ambiAnimPreview" class="anim-preview"></div><div><small>Streaming mode</small><b id="ambiAnimColour">Bridge idle</b></div></div><label>Animation speed <span id="ambiAnimSpeedValue">65%</span><input id="ambiAnimSpeed" type="range" min="1" max="100" value="65"></label><div class="animation-note"><b>Low-latency LED streaming</b><span>The browser sends only Start/Stop. The bridge continuously updates Ambilight locally, so browser latency no longer sits between every frame.</span></div><button id="stopAmbiAnim" class="btn danger-fill wide" disabled>Stop animation</button></div></div>`;ambi.append(card);els('[data-effect]').forEach(b=>b.addEventListener('click',()=>startAnimation(b.dataset.effect)));el('#stopAmbiAnim')?.addEventListener('click',()=>stopAnimation());el('#ambiAnimSpeed')?.addEventListener('input',e=>{if(el('#ambiAnimSpeedValue'))el('#ambiAnimSpeedValue').textContent=`${e.target.value}%`});el('#ambiAnimSpeed')?.addEventListener('change',()=>{if(ui.running&&ui.effect)startAnimation(ui.effect)});el('#ambiMode')?.addEventListener('change',refreshModeHelp);refreshModeHelp();previewStart();pollStatus()}
+  const oldApply=typeof applyAmbilight==='function'?applyAmbilight:null;if(oldApply)applyAmbilight=async function(...a){await stopAnimation(false);return oldApply(...a)};
+  const oldZones=typeof applyZones==='function'?applyZones:null;if(oldZones)applyZones=async function(...a){await stopAnimation(false);return oldZones(...a)};
+  const oldRemote=typeof updateRemoteNotice==='function'?updateRemoteNotice:null;if(oldRemote)updateRemoteNotice=function(...a){oldRemote(...a);cleanRemote()};
+  const oldApps=typeof loadApps==='function'?loadApps:null;if(oldApps)loadApps=async function(...a){await oldApps(...a);cleanApps()};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',inject);else inject();
 })();
