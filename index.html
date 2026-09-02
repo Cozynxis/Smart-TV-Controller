@@ -18,6 +18,7 @@
       <button class="nav" data-view="remote">◉ <span>Remote</span></button>
       <button class="nav" data-view="apps">▦ <span>Apps</span></button>
       <button class="nav" data-view="ambilight">✦ <span>Ambilight</span></button>
+      <button class="nav" data-view="android">A <span>Android TV</span></button>
       <button class="nav" data-view="info">ⓘ <span>TV info</span></button>
       <button class="nav" data-view="devices">▣ <span>Devices</span></button>
       <button class="nav" data-view="settings">⚙ <span>Settings</span></button>
@@ -27,13 +28,13 @@
 
   <main>
     <header>
-      <div><span class="crumb">SMART TV CONTROLLER</span><h1 id="pageTitle">Home</h1><p id="pageSub">Control your Philips TV from one dashboard.</p></div>
-      <div class="header-actions"><button id="refreshStatusBtn" class="btn ghost">Refresh</button><button id="scanBtn" class="btn secondary">Scan network</button><button id="connectBtn" class="btn primary">Bridge</button></div>
+      <div><span class="crumb">SMART TV CONTROLLER</span><h1 id="pageTitle">Home</h1><p id="pageSub">Control and inspect your Philips TV without losing the saved connection.</p></div>
+      <div class="header-actions"><button id="refreshStatusBtn" class="btn ghost">Refresh</button><button id="scanBtn" class="btn secondary">Scan</button><button id="connectBtn" class="btn primary">Bridge</button></div>
     </header>
 
     <section class="view active" id="view-home">
       <div class="hero card">
-        <div class="hero-copy"><span class="eyebrow">CURRENT DEVICE</span><div class="title-row"><h2 id="heroTvName">No TV connected</h2><span id="connectionBadge" class="badge offline">Offline</span></div><p id="heroTvMeta">Connect your Philips TV once and the controller keeps using the saved connection.</p><div class="hero-actions"><button class="btn primary" data-go="remote">Open remote</button><button class="btn secondary" data-go="ambilight">Ambilight Studio</button><button class="btn ghost" data-go="info">TV details</button></div></div>
+        <div class="hero-copy"><span class="eyebrow">CURRENT DEVICE</span><div class="title-row"><h2 id="heroTvName">No TV connected</h2><span id="connectionBadge" class="badge offline">Offline</span></div><p id="heroTvMeta">Your saved TV stays selected even when a single feature is unavailable.</p><div class="hero-actions"><button class="btn primary" data-go="remote">Remote</button><button class="btn secondary" data-go="ambilight">Ambilight Studio</button><button class="btn ghost" data-go="android">Android TV</button></div></div>
         <div class="tv-visual"><div class="screen"><div class="glow"></div><div class="screen-ui"><b id="screenStatus">OFFLINE</b><small id="screenSource">Waiting for TV</small></div></div><div class="stand"></div></div>
       </div>
       <div class="grid stats">
@@ -43,50 +44,65 @@
         <div class="card stat"><span>Ambilight</span><b id="statAmbilight">—</b><small>Current style</small></div>
       </div>
       <div class="grid two">
-        <div class="card"><div class="card-head"><div><h3>Quick controls</h3><p>Commands that use Philips JointSpace input keys.</p></div></div><div class="quick-grid six">
-          <button class="quick danger-soft" data-key="Standby">⏻<span>Standby</span></button><button class="quick" data-key="Mute">◖<span>Mute</span></button><button class="quick" data-key="Home">⌂<span>Home</span></button><button class="quick" data-key="Source">↔<span>Source</span></button><button class="quick" data-key="Guide">▤<span>Guide</span></button><button class="quick" data-key="AmbilightOnOff">✦<span>Ambilight</span></button>
-        </div></div>
-        <div class="card"><div class="card-head"><div><h3>TV capabilities</h3><p>Detected without changing your connection.</p></div><button id="capRefreshBtn" class="text-btn">Check</button></div><div id="capabilities" class="cap-grid"><span>Volume<b>—</b></span><span>Activity<b>—</b></span><span>Power<b>—</b></span><span>Ambilight<b>—</b></span></div></div>
+        <div class="card"><div class="card-head"><div><h3>Quick controls</h3><p>Control status is detected separately from read-only TV access.</p></div></div><div class="quick-grid six"><button class="quick danger-soft" data-key="Standby">⏻<span>Standby</span></button><button class="quick" data-key="Mute">◖<span>Mute</span></button><button class="quick" data-key="Home">⌂<span>Home</span></button><button class="quick" data-key="Source">↔<span>Source</span></button><button class="quick" data-key="Guide">▤<span>Guide</span></button><button class="quick" data-key="AmbilightOnOff">✦<span>Ambilight</span></button></div></div>
+        <div class="card"><div class="card-head"><div><h3>Capabilities</h3><p>Reported live by your TV.</p></div><button id="capRefreshBtn" class="text-btn">Check</button></div><div id="capabilities" class="cap-grid"><span>Volume<b>—</b></span><span>Activity<b>—</b></span><span>Input key<b>—</b></span><span>Apps<b>—</b></span><span>Ambilight<b>—</b></span><span>Secure creds<b>—</b></span></div></div>
       </div>
     </section>
 
     <section class="view" id="view-remote">
+      <div id="remoteNotice" class="notice hidden"></div>
       <div class="remote-layout">
         <div class="remote card">
-          <div class="remote-top"><button class="round danger" data-key="Standby">⏻</button><div><b id="remoteDeviceName">No TV</b><small>Philips remote</small></div><button class="round" data-key="Source">↔</button></div>
+          <div class="remote-top"><button class="round danger" data-key="Standby">⏻</button><div><b id="remoteDeviceName">No TV</b><small>Philips JointSpace remote</small></div><button class="round" data-key="Source">↔</button></div>
           <div class="remote-row"><button data-key="Home">⌂ Home</button><button data-key="Options">☰ Options</button><button data-key="Settings">⚙ Adjust</button></div>
           <div class="dpad"><button class="up" data-key="CursorUp">▲</button><button class="left" data-key="CursorLeft">◀</button><button class="ok" data-key="Confirm">OK</button><button class="right" data-key="CursorRight">▶</button><button class="down" data-key="CursorDown">▼</button></div>
-          <div class="remote-row"><button data-key="Back">↶ Back</button><button data-key="Info">ⓘ Info</button><button data-key="WatchTV">TV Watch TV</button></div>
+          <div class="remote-row"><button data-key="Back">↶ Back</button><button data-key="Info">ⓘ Info</button><button data-key="WatchTV">TV</button></div>
           <div class="volume-panel"><div><span>Volume</span><b id="volumeValue">—</b></div><input id="volumeSlider" type="range" min="0" max="60" value="20" /><div class="remote-row thirds"><button data-key="VolumeDown">−</button><button id="muteBtn">Mute</button><button data-key="VolumeUp">＋</button></div></div>
           <div class="remote-row media"><button data-key="Previous">|◀</button><button data-key="Rewind">◀◀</button><button data-key="PlayPause">▶❚❚</button><button data-key="Stop">■</button><button data-key="FastForward">▶▶</button><button data-key="Next">▶|</button></div>
           <div class="colour-row"><button data-key="RedColour"></button><button data-key="GreenColour"></button><button data-key="YellowColour"></button><button data-key="BlueColour"></button></div>
         </div>
         <div class="remote-side-stack">
-          <div class="card remote-side"><div class="card-head"><div><h3>Channel pad</h3><p>Digits and channel stepping.</p></div></div><div class="channel-grid" id="channelGrid"></div></div>
-          <div class="card remote-side"><h3>More Philips keys</h3><div class="shortcut-grid"><button data-key="Subtitle">Subtitles</button><button data-key="Teletext">Teletext</button><button data-key="Viewmode">View mode</button><button data-key="Online">Online</button><button data-key="Find">Find</button><button data-key="Record">Record</button><button data-key="Dot">Dot</button><button data-key="AmbilightOnOff">Ambilight</button></div></div>
+          <div class="card remote-side"><h3>Channel pad</h3><div class="channel-grid" id="channelGrid"></div></div>
+          <div class="card remote-side"><h3>More keys</h3><div class="shortcut-grid"><button data-key="Subtitle">Subtitles</button><button data-key="Teletext">Teletext</button><button data-key="Viewmode">View mode</button><button data-key="Online">Online</button><button data-key="Find">Find</button><button data-key="Record">Record</button><button data-key="Dot">Dot</button><button data-key="AmbilightOnOff">Ambilight</button></div></div>
         </div>
       </div>
     </section>
 
-    <section class="view" id="view-apps"><div class="card"><div class="card-head"><div><h3>Installed applications</h3><p>The list is loaded from the TV when this firmware exposes it.</p></div><button id="refreshAppsBtn" class="btn secondary">Refresh apps</button></div><div id="appsGrid" class="apps-grid empty">Connect a TV to load apps.</div></div></section>
+    <section class="view" id="view-apps">
+      <div class="card"><div class="card-head"><div><h3>Installed applications</h3><p>Some Philips Android firmwares do not expose /applications over the active connection.</p></div><button id="refreshAppsBtn" class="btn secondary">Refresh apps</button></div><div id="appsStatus" class="notice subtle">Connect a TV to inspect application support.</div><div id="appsGrid" class="apps-grid empty">No apps loaded.</div></div>
+    </section>
 
     <section class="view" id="view-ambilight">
       <div class="grid two">
-        <div class="card"><div class="card-head"><div><h3>Ambilight Studio</h3><p>Uses supported JointSpace Ambilight routes with automatic fallback.</p></div><span class="badge protected">Safe mode</span></div><label>Mode<select id="ambiMode"><option value="follow_video">Follow video</option><option value="follow_audio">Follow audio</option><option value="manual">Follow colour</option><option value="off">Off</option></select></label><label>Preset<select id="ambiPreset"><option value="STANDARD">Standard</option><option value="IMMERSIVE">Immersive</option><option value="NATURAL">Natural</option></select></label><label>Custom colour<input id="ambiColor" type="color" value="#7c5cff" /></label><button id="applyAmbiBtn" class="btn primary wide">Apply Ambilight</button><div class="ambi-quick"><button data-ambi="follow_video">Video</button><button data-ambi="follow_audio">Audio</button><button data-ambi="manual">Colour</button><button data-ambi="off">Off</button></div></div>
-        <div class="card"><div class="card-head"><div><h3>Detected Ambilight</h3><p>Topology and styles reported by the TV.</p></div><button id="loadAmbiInfoBtn" class="text-btn">Reload</button></div><div id="ambiInfo" class="info-empty">No Ambilight data loaded yet.</div><div class="zone-tv"><button>TOP</button><button>LEFT</button><div>TV</div><button>RIGHT</button><button>BOTTOM</button></div></div>
+        <div class="card ambi-controls"><div class="card-head"><div><h3>Ambilight Studio</h3><p>Modes and sub-modes are loaded from Philips JointSpace where possible.</p></div><span class="badge protected">Connection safe</span></div>
+          <label>Mode<select id="ambiMode"><option value="FOLLOW_VIDEO">Follow video</option><option value="FOLLOW_AUDIO">Follow audio</option><option value="FOLLOW_COLOR">Follow colour</option><option value="FLAG">Flag</option><option value="OFF">Off</option></select></label>
+          <label id="ambiPresetLabel">Preset<select id="ambiPreset"></select></label>
+          <label id="ambiTuningLabel" class="hidden">Audio tuning<input id="ambiTuning" type="range" min="0" max="2" value="0" /></label>
+          <label id="ambiColorLabel" class="hidden">Custom colour<input id="ambiColor" type="color" value="#7c5cff" /></label>
+          <button id="applyAmbiBtn" class="btn primary wide">Apply mode</button>
+          <div class="ambi-quick"><button data-ambi-mode="FOLLOW_VIDEO">Video</button><button data-ambi-mode="FOLLOW_AUDIO">Audio</button><button data-ambi-mode="FOLLOW_COLOR">Colour</button><button data-ambi-mode="FLAG">Flag</button><button data-ambi-mode="OFF">Off</button></div>
+        </div>
+        <div class="card"><div class="card-head"><div><h3>Zones</h3><p>Left, top and right are editable in Custom Zone mode. Your TV has no bottom Ambilight.</p></div><button id="loadAmbiInfoBtn" class="text-btn">Reload</button></div>
+          <div class="zone-tv" id="zoneTv"><button class="zone active" data-zone="top">TOP</button><button class="zone active" data-zone="left">LEFT</button><div><span>TV</span><small id="zoneModeHint">Custom Zone mode</small></div><button class="zone active" data-zone="right">RIGHT</button></div>
+          <div class="zone-actions"><input id="zoneColor" type="color" value="#7c5cff"/><button id="applyZonesBtn" class="btn primary">Apply custom zones</button><button id="allZonesOnBtn" class="btn secondary">All on</button></div>
+          <div id="ambiInfo" class="info-empty">No Ambilight data loaded yet.</div>
+        </div>
       </div>
     </section>
 
+    <section class="view" id="view-android">
+      <div class="grid stats android-stats"><div class="card stat"><span>OS / platform</span><b id="androidOs">—</b><small>System feature</small></div><div class="card stat"><span>Current activity</span><b id="androidActivity">—</b><small>App / input</small></div><div class="card stat"><span>Storage</span><b id="androidStorage">—</b><small>When exposed</small></div><div class="card stat"><span>TV clock</span><b id="androidTime">—</b><small>JointSpace timestamp</small></div></div>
+      <div class="grid two"><div class="card"><div class="card-head"><div><h3>Android / JointSpace features</h3><p>Features reported by the TV itself.</p></div><button id="refreshAndroidBtn" class="btn secondary">Refresh</button></div><div id="androidFeatures" class="feature-list">No data loaded.</div></div><div class="card"><h3>Media & TV services</h3><div id="androidServices" class="service-grid"><span>Channels<b>—</b></span><span>Recordings<b>—</b></span><span>Applications<b>—</b></span><span>Input key<b>—</b></span><span>Text entry<b>—</b></span><span>Activities<b>—</b></span></div><p class="muted">This page only uses endpoints your TV exposes. It does not start Android Remote pairing.</p></div></div>
+      <div class="card"><h3>Current activity raw view</h3><pre id="androidRaw">Connect a TV and press Refresh.</pre></div>
+    </section>
+
     <section class="view" id="view-info">
-      <div class="grid two"><div class="card"><div class="card-head"><div><h3>Television</h3><p>Live system information from JointSpace.</p></div><button id="refreshInfoBtn" class="btn secondary">Refresh</button></div><div id="tvInfoGrid" class="detail-grid"><span>Name<b>—</b></span><span>Model<b>—</b></span><span>IP address<b>—</b></span><span>API mode<b>—</b></span><span>Power<b>—</b></span><span>Software<b>—</b></span></div></div><div class="card"><h3>Connection protection</h3><div class="protect-box"><b>Pairing is locked while HTTP mode works.</b><p>Refreshing, reconnecting or using controls does not create a new PIN request and does not erase the saved TV connection.</p></div><h3>Route fallback</h3><p class="muted">On HTTP 404 the bridge automatically tries the same TV command on /6, unversioned and /1 routes and remembers the working route.</p><button id="openDiagBtn" class="btn ghost wide">Open route diagnostics</button></div></div>
+      <div class="grid two"><div class="card"><div class="card-head"><div><h3>Television</h3><p>Live system information.</p></div><button id="refreshInfoBtn" class="btn secondary">Refresh</button></div><div id="tvInfoGrid" class="detail-grid"><span>Name<b>—</b></span><span>Model<b>—</b></span><span>IP address<b>—</b></span><span>API mode<b>—</b></span><span>Power<b>—</b></span><span>Software<b>—</b></span></div></div><div class="card"><h3>Connection protection</h3><div class="protect-box"><b>No automatic re-pairing.</b><p>The bridge keeps the current HTTP connection. If a secure-only command is blocked, it reports that feature as unavailable instead of deleting the connection or opening PIN pairing.</p></div><button id="openDiagBtn" class="btn ghost wide">Open diagnostics</button></div></div>
     </section>
 
-    <section class="view" id="view-devices">
-      <div class="grid two"><div class="card"><div class="card-head"><div><h3>Network discovery</h3><p>Saved TVs are checked first so a slow SSDP response cannot hide your TV.</p></div><button id="deviceScanBtn" class="btn primary">Scan</button></div><div id="scanResults" class="device-list empty">No scan results yet.</div></div><div class="card"><h3>Add / reconnect by IP</h3><p>This uses the existing HTTP connection first. It does not request a new PIN while that mode works.</p><label>Name<input id="manualName" placeholder="Philips TV"/></label><label>IP address<input id="manualIp" placeholder="192.168.2.12"/></label><label>Brand<select id="manualBrand"><option value="philips">Philips</option></select></label><button id="manualAddBtn" class="btn primary wide">Connect by IP</button></div></div>
-      <div class="card device-saved-card"><div class="card-head"><div><h3>Saved devices</h3><p>Your browser-side device list.</p></div></div><div id="savedDevices" class="device-list empty">No saved TVs yet.</div></div>
-    </section>
+    <section class="view" id="view-devices"><div class="grid two"><div class="card"><div class="card-head"><div><h3>Network discovery</h3><p>Saved TVs are checked first.</p></div><button id="deviceScanBtn" class="btn primary">Scan</button></div><div id="scanResults" class="device-list empty">No scan results yet.</div></div><div class="card"><h3>Connect by IP</h3><label>Name<input id="manualName" placeholder="Philips TV"/></label><label>IP address<input id="manualIp" placeholder="192.168.2.12"/></label><button id="manualAddBtn" class="btn primary wide">Connect by IP</button></div></div><div class="card device-saved-card"><h3>Saved devices</h3><div id="savedDevices" class="device-list empty">No saved TVs yet.</div></div></section>
 
-    <section class="view" id="view-settings"><div class="grid two"><div class="card"><h3>Bridge</h3><label>Bridge URL<input id="bridgeUrl" value="http://localhost:8765"/></label><button id="saveBridgeBtn" class="btn primary">Save & test</button><p class="muted">Keep the bridge running on the computer on the same LAN as your TV.</p></div><div class="card"><h3>Controller</h3><label class="toggle-row">Auto-refresh status<input id="autoConnect" type="checkbox" checked/></label><label class="toggle-row">Haptics<input id="haptics" type="checkbox" checked/></label><div class="protect-box compact"><b>TV connection protected</b><p>Clearing browser data is optional and does not delete bridge-side device data, but it removes the browser's selected TV.</p></div><button id="clearDataBtn" class="btn danger-fill">Clear browser data</button></div></div></section>
+    <section class="view" id="view-settings"><div class="grid two"><div class="card"><h3>Bridge</h3><label>Bridge URL<input id="bridgeUrl" value="http://localhost:8765"/></label><button id="saveBridgeBtn" class="btn primary">Save & test</button></div><div class="card"><h3>Controller</h3><label class="toggle-row">Auto-refresh status<input id="autoConnect" type="checkbox" checked/></label><label class="toggle-row">Haptics<input id="haptics" type="checkbox" checked/></label><button id="clearDataBtn" class="btn danger-fill">Clear browser selection</button></div></div></section>
   </main>
 </div>
 <div id="toast" class="toast"></div>
