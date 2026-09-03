@@ -28,7 +28,14 @@ val syncWebAssets by tasks.registering(Copy::class) {
         include("css/**")
         include("js/**")
     }
-    from("src/main/android-assets")
+    from(rootProject.projectDir.parentFile) {
+        include("index.html")
+        filter { line: String ->
+            line
+                .replace("<script src=\"js/app.js\"></script>", "<script src=\"js/android-native.js\"></script>\n<script src=\"js/app.js\"></script>")
+                .replace("<script src=\"js/enhancements.js\"></script>", "<script src=\"js/enhancements.js\"></script>\n<script src=\"js/animation-creator.js\"></script>\n<script src=\"js/custom-animation-fixes.js\"></script>\n<script src=\"js/remote-secure.js\"></script>\n<script src=\"js/announcements.js\"></script>\n<script src=\"js/countdown.js\"></script>\n<script src=\"js/apps-enhanced.js\"></script>")
+        }
+    }
     into(layout.buildDirectory.dir("generated/webassets"))
 }
 
